@@ -63,6 +63,8 @@ namespace TcgBattle.UI
         private GameObject playerActiveFrame;
         private TMP_Text botActiveLabel, playerActiveLabel;
         private HandController hand;
+        private CardInspectPreview handInspect;
+        private CardView _inspectSourceView;   // opponent board view feeding the inspect preview
         private TMP_Text botInfoText, playerDeckText;
         private TMP_Text botEnergyText, playerEnergyText;
         private Image[] botPips, playerPips;
@@ -201,6 +203,7 @@ namespace TcgBattle.UI
             BuildActionRow();
             BuildHand();
             BuildOverlays();
+            BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
 
             // capture the static layout once so it can be rescaled when the canvas size
             // changes (card views capture themselves in CardView.ApplyScale)
@@ -560,18 +563,28 @@ namespace TcgBattle.UI
             bool myTurn = battle.Phase == Phase.PlayerTurn;
 
             // ---- board slots ----
-            BindSlot(botActiveView, battle.Bot.Active, CardDisplayMode.Active);
+            BindSlot(botActiveView, battle.Bot.Active, CardDisplayMode.Active, botInspect: true);
             bool botActiveEmpty = battle.Bot.Active == null;
             botActiveFrame.SetActive(botActiveEmpty);
             if (botActiveEmpty && botActiveLabel != null)
                 botActiveLabel.text = "Kosong";
-            BindBenchRow(botBenchViews, botBenchFrames, botBenchLabels, battle.Bot.Bench, "Kosong");
+            BindBenchRow(botBenchViews, botBenchFrames, botBenchLabels, battle.Bot.Bench, "Kosong", botInspect: true);
 
             BindSlot(playerActiveView, battle.Player.Active, CardDisplayMode.Active);
             bool pickHint = setup && battle.Player.Active == null;
             playerActiveFrame.SetActive(battle.Player.Active == null);
             playerActiveLabel.text = pickHint ? "PILIH KARTU\nAKTIFMU" : "Kosong";
             BindBenchRow(playerBenchViews, playerBenchFrames, playerBenchLabels, battle.Player.Bench, "Kosong");
+
+            // inspection preview: if the opponent card it shows just left the board
+            // (KO, promotion, retreat), drop the stale preview.
+            if (handInspect != null && handInspect.CurrentCard != null && _inspectSourceView != null &&
+                handInspect.CurrentCard != battle.Bot.Active &&
+                !battle.Bot.Bench.Contains(handInspect.CurrentCard))
+            {
+                _inspectSourceView = null;
+                handInspect.Hide();
+            }
 
             // ---- hand ----
             hand.Sync(battle.Player.Hand);
@@ -664,17 +677,22 @@ namespace TcgBattle.UI
             }
         }
 
-        private void BindSlot(CardView view, CardInstance card, CardDisplayMode mode)
+        private void BindSlot(CardView view, CardInstance card, CardDisplayMode mode, bool botInspect = false)
         {
             if (view == null)
                 return;
             view.Bind(card, mode);
             view.Clicked -= OnCardClicked;
             view.Clicked += OnCardClicked;
+            if (botInspect)
+            {
+                view.Hovered -= OnBoardHovered;
+                view.Hovered += OnBoardHovered;
+            }
         }
 
         private void BindBenchRow(CardView[] views, GameObject[] frames, TMP_Text[] labels,
-            List<CardInstance> bench, string emptyLabel)
+            List<CardInstance> bench, string emptyLabel, bool botInspect = false)
         {
             for (int i = 0; i < views.Length; i++)
             {
@@ -682,6 +700,11 @@ namespace TcgBattle.UI
                 views[i].Bind(card, CardDisplayMode.Bench);
                 views[i].Clicked -= OnCardClicked;
                 views[i].Clicked += OnCardClicked;
+                if (botInspect)
+                {
+                    views[i].Hovered -= OnBoardHovered;
+                    views[i].Hovered += OnBoardHovered;
+                }
                 frames[i].SetActive(card == null);
                 if (card == null && labels[i] != null)
                     labels[i].text = emptyLabel;
@@ -1098,6 +1121,9 @@ namespace TcgBattle.UI
         {
             if (overOverlay == null)
                 return;
+            if (hand != null)
+                hand.HideInspectPreview();   // inspection preview never outlives the battle
+            _inspectSourceView = null;       // board-sourced previews: forget the source slot too
             overOverlay.SetActive(true);
             bool playerWins = winner == Side.Player;
             overText.text = playerWins ? "KAMU MENANG!" : "BOT MENANG!";
@@ -1244,6 +1270,50 @@ namespace TcgBattle.UI
             // The built-in ColorTint transition would fight it, so it stays off.
             btn.transition = Selectable.Transition.None;
             return btn;
+        }
+
+        /// <summary>
+        /// Hand-card inspection overlay lives under SafeRoot like every other UI (the
+        /// rescale registry below covers it). Built after the overlays so it renders
+        /// above the board, but it cannot intercept input (CanvasGroup in CardInspectPreview).
+        /// </summary>
+        private void BuildInspectPreview()
+        {
+            var go = new GameObject("HandInspectPreview", typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(320f, 470f);
+            handInspect = go.AddComponent<CardInspectPreview>();
+            hand.SetInspectPreview(handInspect);
+        }
+
+        /// <summary>
+        /// Stage-3 addendum: opponent board cards (active + bench) feed the same inspect
+        /// preview. Face-down cards (still hidden during the coin reveal) never open the
+        /// preview, so nothing hidden is leaked, and hovering stays a passive mirror - no
+        /// selection or combat behavior change. The panel sits just above the hovered
+        /// card's top edge inside the safe area, i.e. in the bot zone for opponent cards,
+        /// where it never covers the action buttons (see CardInspectPreview.Reposition).
+        /// </summary>
+        private void OnBoardHovered(CardView view, bool entered)
+        {
+            if (entered)
+            {
+                if (view.Card == null || view.Card.FaceDown)
+                    return;
+                _inspectSourceView = view;
+                if (handInspect != null)
+                    handInspect.Show(view.Card, view.Root);
+            }
+            else
+            {
+                if (_inspectSourceView == view)
+                    _inspectSourceView = null;
+                if (handInspect != null && view.Card != null)
+                    handInspect.HideIfCard(view.Card);
+            }
         }
 
         private TMP_Text MakeText(string name, Transform parent, float fontSize, Color color,
