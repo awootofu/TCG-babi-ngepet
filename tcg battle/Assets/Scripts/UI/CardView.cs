@@ -16,12 +16,15 @@ namespace TcgBattle.UI
     /// HP bar + text, element icon, attack-energy cost, KO/selected states.
     /// Handles its own click events. Built entirely in code - no prefab needed.
     /// </summary>
-    public class CardView : MonoBehaviour, IPointerClickHandler
+    public class CardView : MonoBehaviour, IPointerClickHandler, IPointerEnterHandler, IPointerExitHandler
     {
         public CardInstance Card { get; private set; }
         public CardDisplayMode Mode { get; private set; } = CardDisplayMode.Active;
         public bool IsSelected { get; private set; }
         public event Action<CardView> Clicked;
+
+        /// <summary>Fires when the pointer enters/leaves this card's raycast area (bubbled from children).</summary>
+        public event Action<CardView, bool> Hovered;
 
         private RectTransform _root;
         private Image _backing;
@@ -41,6 +44,8 @@ namespace TcgBattle.UI
         private TMP_Text _supportText;
         private float _shownHpPct = 1f;
         private bool _hpTweening;
+        private bool _hovered;
+        private Color _frameDefault = ColFrameIvory;   // per-mode base frame color, set by Bind
 
         // current global layout scale (1 = the 1080x1920 reference composition)
         public static float GlobalScale = 1f;
@@ -59,6 +64,7 @@ namespace TcgBattle.UI
         private static readonly Color ColHpLow = Hex(0xC0504E);
         private static readonly Color ColIvory = Hex(0xF2EADA);
         private static readonly Color ColInk = Hex(0x241B36);
+        private static readonly Color ColFrameHover = new Color(0.93f, 0.78f, 0.42f, 0.80f); // soft warm gold
 
         public static CardView Create(Transform parent, Vector2 size, string name = "Card")
         {
@@ -210,7 +216,8 @@ namespace TcgBattle.UI
 
             // mode frame: bright gold for the focal active, faint ivory on the bench/hand
             _frame.gameObject.SetActive(isBoard);
-            _frame.color = mode == CardDisplayMode.Active ? ColFrameGold : ColFrameIvory;
+            _frameDefault = mode == CardDisplayMode.Active ? ColFrameGold : ColFrameIvory;
+            _frame.color = _frameDefault;
 
             // Info strip: shown only for battle cards on the board.
             var strip = _hpBg.transform.parent.gameObject;
@@ -222,6 +229,7 @@ namespace TcgBattle.UI
             }
 
             SetDimmed(false);
+            SetHovered(false);
             SetSelected(false);
         }
 
@@ -305,6 +313,36 @@ namespace TcgBattle.UI
             IsSelected = selected;
             if (_selectedFrame != null)
                 _selectedFrame.gameObject.SetActive(selected);
+        }
+
+        /// <summary>Whether the card is currently hover-highlighted.</summary>
+        public bool IsHovered => _hovered;
+
+        /// <summary>
+        /// Hover highlight: warms the mode frame in place. Deliberately no new child
+        /// objects and no motion here, so the rescale capture stays valid and the
+        /// fan layout (HandController) remains the single owner of card movement.
+        /// </summary>
+        public void SetHovered(bool hovered)
+        {
+            _hovered = hovered;
+            if (_frame != null)
+                _frame.color = hovered ? ColFrameHover : _frameDefault;
+        }
+
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            if (Card == null || !gameObject.activeInHierarchy)
+                return;
+            SetHovered(true);
+            Hovered?.Invoke(this, true);
+        }
+
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            // Process even for a dying view: listeners may need to clear their state.
+            SetHovered(false);
+            Hovered?.Invoke(this, false);
         }
 
         public void SetDimmed(bool dimmed)
