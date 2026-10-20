@@ -33,6 +33,7 @@ namespace TcgBattle.UI
         private bool _hasLaidOut;
         private CardView _hovered;         // hand view currently under the pointer, if any
         private const float HoverTweenTime = 0.12f;
+        private CardInspectPreview _inspectPreview;   // hover inspection overlay (built by BattleUI)
 
         // reference-scale card sizing (canvas height 1920); cardWidth/cardHeight hold the
         // currently applied (scaled) values used for fan layout
@@ -69,6 +70,19 @@ namespace TcgBattle.UI
         public void SetClickHandler(Action<CardView> onClick)
         {
             _onClick = onClick;
+        }
+
+        /// <summary>Wires the hover inspection overlay (built by BattleUI).</summary>
+        public void SetInspectPreview(CardInspectPreview preview)
+        {
+            _inspectPreview = preview;
+        }
+
+        /// <summary>Used by BattleUI to drop the preview when the battle ends.</summary>
+        public void HideInspectPreview()
+        {
+            if (_inspectPreview != null)
+                _inspectPreview.Hide();
         }
 
         /// <summary>Sync views with the hand list; keeps existing views alive when possible.</summary>
@@ -121,6 +135,11 @@ namespace TcgBattle.UI
                 _hovered.Root.SetAsLastSibling();
             }
 
+            // Inspection preview: if the card it shows just left the hand, drop it.
+            if (_inspectPreview != null && _inspectPreview.CurrentCard != null &&
+                !hand.Contains(_inspectPreview.CurrentCard))
+                _inspectPreview.Hide();
+
             // apply the current layout scale to every card's internal rects
             foreach (var v in _views)
                 v.ApplyScale(CardView.GlobalScale);
@@ -161,6 +180,8 @@ namespace TcgBattle.UI
                     _hovered.SetHovered(false); // that view's exit event may arrive late or never
                 _hovered = view;
                 view.Root.SetAsLastSibling();   // hovered card wins the overlap fight
+                if (_inspectPreview != null && view.Card != null)
+                    _inspectPreview.Show(view.Card, view.Root);
             }
             else
             {
@@ -168,6 +189,8 @@ namespace TcgBattle.UI
                     return;                     // stale exit after Sync already cleared it
                 _hovered = null;
                 RestoreFanOrder();
+                if (_inspectPreview != null && view.Card != null)
+                    _inspectPreview.HideIfCard(view.Card);
             }
             Layout(true, HoverTweenTime);
         }
