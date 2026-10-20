@@ -161,53 +161,186 @@ namespace TcgBattle.UI
     }
 
     /// <summary>
-    /// Press feedback for buttons: slight shrink while pressed, back to normal on release.
-    /// Ignored on disabled buttons so dead buttons stay still.
+    /// Hover / press / disabled feedback for buttons.
+    /// Owns the background image color and the TMP label color (crossfaded per state),
+    /// plus the press-shrink animation. BattleUI.MakeButton sets the Button's built-in
+    /// transition to None so nothing else drives the same graphics.
+    /// States: disabled mutes background+label and ignores input; pressed dims slightly
+    /// (alongside the shrink); hovered shifts the background toward a warm gold accent —
+    /// chosen so the shift is visible on the ivory, gold, and ink-purple button colors alike.
     /// </summary>
-    public class ButtonFx : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
+    public class ButtonFx : MonoBehaviour, IPointerEnterHandler, IPointerDownHandler, IPointerUpHandler, IPointerExitHandler
     {
         [SerializeField] private float pressScale = 0.955f;
+        [SerializeField] private float hoverAccent = 0.22f; // 0 = no shift, 1 = full accent
+        [SerializeField] private float pressDim = 0.88f;   // pressed brightness multiplier (rgb)
+        [SerializeField] private float colorFadeTime = 0.08f;
 
+        private static readonly Color HoverAccent = Hex(0xC08A2E); // warm gold-ochre
+        private static readonly Color MutedBg = Hex(0x6E6A62);
+        private static readonly Color MutedLabel = Hex(0x9A958B);
+
+        private Image _bg;
+        private TMPro.TMP_Text _label;
         private RectTransform _rt;
         private Vector3 _base = Vector3.one;
         private Button _btn;
-        private Coroutine _anim;
+        private Coroutine _scaleAnim;
+        private Coroutine _colorAnim;
+
+        private Color _bgBase = Color.white;
+        private Color _labelBase = Color.white;
+        private bool _hovering;
+        private bool _pressed;
+        private bool _lastInteractable = true;
 
         private void Awake()
         {
             _rt = (RectTransform)transform;
             _base = _rt.localScale;
             _btn = GetComponent<Button>();
+            _bg = GetComponent<Image>();
+            _label = _rt.GetComponentInChildren<TMPro.TMP_Text>();
+            if (_bg != null) _bgBase = _bg.color;
+            if (_label != null) _labelBase = _label.color;
         }
 
-        private bool CanReact => _btn == null || _btn.interactable;
-
-        public void OnPointerDown(PointerEventData eventData)
+        private void OnEnable()
         {
-            if (CanReact)
-                Animate(pressScale, 0.05f);
+            // Pointer state cannot be trusted across deactivation; snap to the current state.
+            _hovering = false;
+            _pressed = false;
+            Refresh(instant: true);
         }
 
-        public void OnPointerUp(PointerEventData eventData)
+        private void Update()
         {
-            if (CanReact)
-                Animate(1f, 0.1f);
+            if (_btn == null || _btn.interactable == _lastInteractable)
+                return;
+            _lastInteractable = _btn.interactable;
+            if (!_btn.interactable)
+            {
+                _pressed = false; // a dead button never stays shrunk
+                AnimateScale(1f, 0.08f);
+            }
+            Refresh(instant: false);
+        }
+
+        private bool Interactable => _btn == null || _btn.interactable;
+
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            _hovering = true;
+            Refresh(instant: false);
         }
 
         public void OnPointerExit(PointerEventData eventData)
         {
-            if (CanReact)
-                Animate(1f, 0.1f);
+            _hovering = false;
+            Refresh(instant: false);
         }
 
-        private void Animate(float target, float duration)
+        public void OnPointerDown(PointerEventData eventData)
         {
-            if (_anim != null)
-                StopCoroutine(_anim);
-            _anim = StartCoroutine(Anim(target, duration));
+            if (!Interactable)
+                return;
+            _pressed = true;
+            Refresh(instant: false);
+            AnimateScale(pressScale, 0.05f);
         }
 
-        private IEnumerator Anim(float target, float duration)
+        public void OnPointerUp(PointerEventData eventData)
+        {
+            if (!Interactable)
+                return;
+            _pressed = false;
+            Refresh(instant: false);
+            AnimateScale(1f, 0.1f);
+        }
+
+        private void Refresh(bool instant)
+        {
+            if (_bg == null && _label == null)
+                return;
+
+            var bgTarget = _bgBase;
+            var labelTarget = _labelBase;
+            if (!Interactable)
+            {
+                bgTarget = LerpRgb(_bgBase, MutedBg, 0.40f);
+                bgTarget.a = _bgBase.a * 0.55f;
+                labelTarget = LerpRgb(_labelBase, MutedLabel, 0.50f);
+                labelTarget.a = _labelBase.a * 0.42f;
+            }
+            else
+            {
+                float accent = _pressed ? hoverAccent * 0.6f : (_hovering ? hoverAccent : 0f);
+                bgTarget = LerpRgb(_bgBase, HoverAccent, accent);
+                if (_pressed)
+                    bgTarget = new Color(bgTarget.r * pressDim, bgTarget.g * pressDim, bgTarget.b * pressDim, bgTarget.a);
+            }
+
+            CrossFadeColors(bgTarget, labelTarget, instant ? 0f : colorFadeTime);
+        }
+
+        private static Color LerpRgb(Color from, Color to, float t)
+        {
+            return new Color(
+                Mathf.Lerp(from.r, to.r, t),
+                Mathf.Lerp(from.g, to.g, t),
+                Mathf.Lerp(from.b, to.b, t),
+                from.a);
+        }
+
+        private void CrossFadeColors(Color bgTarget, Color labelTarget, float duration)
+        {
+            if (_colorAnim != null)
+                StopCoroutine(_colorAnim);
+            if (duration <= 0f)
+            {
+                ApplyColors(bgTarget, labelTarget);
+                _colorAnim = null;
+                return;
+            }
+            _colorAnim = StartCoroutine(ColorAnim(bgTarget, labelTarget, duration));
+        }
+
+        private void ApplyColors(Color bg, Color label)
+        {
+            if (_bg != null)
+                _bg.color = bg;
+            if (_label != null)
+                _label.color = label;
+        }
+
+        private IEnumerator ColorAnim(Color bgTarget, Color labelTarget, float duration)
+        {
+            Color bgFrom = _bg != null ? _bg.color : Color.white;
+            Color labelFrom = _label != null ? _label.color : Color.white;
+            float t = 0f;
+            while (t < duration)
+            {
+                if (_bg == null && _label == null)
+                    yield break;
+                t += Time.unscaledDeltaTime;
+                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / duration));
+                ApplyColors(
+                    _bg != null ? Color.Lerp(bgFrom, bgTarget, k) : bgTarget,
+                    _label != null ? Color.Lerp(labelFrom, labelTarget, k) : labelTarget);
+                yield return null;
+            }
+            ApplyColors(bgTarget, labelTarget);
+            _colorAnim = null;
+        }
+
+        private void AnimateScale(float target, float duration)
+        {
+            if (_scaleAnim != null)
+                StopCoroutine(_scaleAnim);
+            _scaleAnim = StartCoroutine(ScaleAnim(target, duration));
+        }
+
+        private IEnumerator ScaleAnim(float target, float duration)
         {
             Vector3 start = _rt.localScale;
             Vector3 end = _base * target;
@@ -222,6 +355,15 @@ namespace TcgBattle.UI
             }
             if (_rt != null)
                 _rt.localScale = end;
+        }
+
+        private static Color Hex(int rgb)
+        {
+            return new Color(
+                ((rgb >> 16) & 0xFF) / 255f,
+                ((rgb >> 8) & 0xFF) / 255f,
+                (rgb & 0xFF) / 255f,
+                1f);
         }
     }
 }

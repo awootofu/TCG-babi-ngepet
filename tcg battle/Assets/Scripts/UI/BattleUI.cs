@@ -1240,9 +1240,9 @@ namespace TcgBattle.UI
 
             go.AddComponent<ButtonFx>();
 
-            var colors = btn.colors;
-            colors.disabledColor = new Color(bg.r, bg.g, bg.b, 0.35f);
-            btn.colors = colors;
+            // ButtonFx owns hover/press/disabled visuals (bg image + label color).
+            // The built-in ColorTint transition would fight it, so it stays off.
+            btn.transition = Selectable.Transition.None;
             return btn;
         }
 
