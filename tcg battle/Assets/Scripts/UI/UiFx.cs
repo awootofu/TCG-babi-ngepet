@@ -177,8 +177,8 @@ namespace TcgBattle.UI
         [SerializeField] private float colorFadeTime = 0.08f;
 
         private static readonly Color HoverAccent = Hex(0xC08A2E); // warm gold-ochre
-        private static readonly Color MutedBg = Hex(0x6E6A62);
-        private static readonly Color MutedLabel = Hex(0x9A958B);
+        private static readonly Color MutedBg = Hex(0x5C5470);     // muted purple, keeps the palette
+        private static readonly Color MutedLabel = Hex(0x9A92AC);
 
         private Image _bg;
         private TMPro.TMP_Text _label;

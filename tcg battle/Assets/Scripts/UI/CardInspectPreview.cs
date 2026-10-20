@@ -75,6 +75,11 @@ namespace TcgBattle.UI
             _group.interactable = false;
             _group.alpha = 0f;
 
+            // soft drop shadow so the panel separates from the board artwork
+            var shadow = MakeImage("Shadow", UiSpriteFactory.Rounded, new Color(0f, 0f, 0f, 0.38f));
+            shadow.type = Image.Type.Sliced;
+            Stretch(shadow.rectTransform, -12, -18, -12, -4);
+
             _backing = MakeImage("Panel", UiSpriteFactory.Rounded, ColBacking);
             _backing.type = Image.Type.Sliced;
             Stretch(_backing.rectTransform, 0, 0, 0, 0);
@@ -228,9 +233,12 @@ namespace TcgBattle.UI
         }
 
         /// <summary>
-        /// Anchor the panel centred above the source card's top edge (its world-space
-        /// top corner, so hover lift/scale/rotation are respected), clamped inside the
-        /// parent rect so it can never be clipped or leave the safe area.
+        /// Landscape docking. The compact panel has no room above or beside the bot's
+        /// top-row cards without covering the controls, so board previews dock in the
+        /// empty upper-right well (leaving the secondary stamina diamond clear) and
+        /// hand previews dock in the empty lower-left well. Neither dock overlaps the
+        /// action bar, the hovered card, the player hand, or the score/stamina rails.
+        /// The panel is still clamped inside SafeRoot for other aspect ratios.
         /// </summary>
         private void Reposition()
         {
@@ -240,17 +248,42 @@ namespace TcgBattle.UI
             if (pr == null)
                 return;
 
-            Vector3 topWorld = _source.TransformPoint(new Vector3(0f, _source.rect.height * 0.5f, 0f));
-            Vector2 local = pr.InverseTransformPoint(topWorld);
-            local.y += 14f + _rt.rect.height * 0.5f;
+            float halfW = _rt.rect.width * 0.5f;
+            float halfH = _rt.rect.height * 0.5f;
+            float parentHalfW = pr.rect.width * 0.5f;
+            float parentHalfH = pr.rect.height * 0.5f;
+            float padW = Mathf.Max(0f, parentHalfW - halfW - 10f);
+            float padH = Mathf.Max(0f, parentHalfH - halfH - 10f);
 
-            float halfW = pr.rect.width * 0.5f - _rt.rect.width * 0.5f - 10f;
-            float halfH = pr.rect.height * 0.5f - _rt.rect.height * 0.5f - 10f;
-            if (halfW < 0f) halfW = 0f;
-            if (halfH < 0f) halfH = 0f;
+            Vector3 topWorld = _source.TransformPoint(new Vector3(0f, _source.rect.height * 0.5f, 0f));
+            Vector2 top = pr.InverseTransformPoint(topWorld);
+            bool lowerSource = top.y < 0f;
+
+            if (lowerSource)
+            {
+                // Hand cards: restore the original presentation - centred directly
+                // above the hovered card with a small gap, so the info reads as part
+                // of that card instead of a detached side panel.
+                Vector3 leftWorld = _source.TransformPoint(new Vector3(-_source.rect.width * 0.5f, 0f, 0f));
+                Vector3 rightWorld = _source.TransformPoint(new Vector3(_source.rect.width * 0.5f, 0f, 0f));
+                Vector2 left = pr.InverseTransformPoint(leftWorld);
+                Vector2 right = pr.InverseTransformPoint(rightWorld);
+                float xAbove = (left.x + right.x) * 0.5f;
+                float yAbove = top.y + 14f + halfH;
+                _rt.anchoredPosition = new Vector2(
+                    Mathf.Clamp(xAbove, -padW, padW),
+                    Mathf.Clamp(yAbove, -padH, padH));
+                return;
+            }
+
+            // Bot board cards sit against the top edge; dock the panel in the empty
+            // upper-right well, clear of the action bar and source card. The 160px
+            // reserve keeps the bot stamina diamond/deck stack out from under it.
+            float boardX = parentHalfW - 10f - 160f - halfW;
+            float boardY = parentHalfH - 10f - halfH;
             _rt.anchoredPosition = new Vector2(
-                Mathf.Clamp(local.x, -halfW, halfW),
-                Mathf.Clamp(local.y, -halfH, halfH));
+                Mathf.Clamp(boardX, -padW, padW),
+                Mathf.Clamp(boardY, -padH, padH));
         }
 
         private void OnRectTransformDimensionsChange()

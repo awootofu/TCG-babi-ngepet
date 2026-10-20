@@ -8,7 +8,7 @@ using TcgBattle.Gameplay;
 namespace TcgBattle.UI
 {
     /// <summary>
-    /// Builds the whole portrait battle screen in code (1080x1920 reference) and renders
+    /// Builds the whole landscape battle screen in code (1920x1080 reference) and renders
     /// BattleManager state. Everything lives under a safe-area root and uses percentage
     /// anchors, the palette follows the folklore direction (deep purple / muted lavender /
     /// warm ivory / subtle gold), and all animations here are cosmetic - battle state is
@@ -16,19 +16,21 @@ namespace TcgBattle.UI
     /// </summary>
     public class BattleUI : MonoBehaviour
     {
-        private const float RefH = 1920f;
+        private const float RefH = 1080f;
 
-        // ---- vertical band anchors (fraction of reference height, bottom-up) ----
-        private const float BandPlayerHeader = 0.0219f;   // 42px
-        private const float BandHand = 0.1031f;           // 198px
-        private const float BandBenchPlayer = 0.2406f;    // 462px
-        private const float BandActivePlayer = 0.4151f;   // 797px
-        private const float BandStatus = 0.5488f;         // 1054px
-        private const float BandButtons = 0.5901f;        // 1133px
-        private const float BandDivider = 0.6203f;        // 1191px
-        private const float BandActiveBot = 0.7328f;      // 1407px
-        private const float BandBenchBot = 0.8958f;       // 1720px
-        private const float BandBotHeader = 0.9672f;      // 1857px
+        // ---- landscape bands (fraction of reference height, bottom-up) ----
+        private const float BandPlayerInfo = 0.4630f;     // 500px  player label / score
+        private const float BandPlayerDeck = 0.4213f;     // 455px  player deck line
+        private const float BandHand = 0.1185f;           // 128px  hand fan centre
+        private const float BandBenchPlayer = 0.3565f;    // 385px
+        private const float BandActivePlayer = 0.3750f;   // 405px
+        private const float BandStatus = 0.5694f;         // 615px  control bar
+        private const float BandButtons = 0.5694f;        // 615px
+        private const float BandDivider = 0.6111f;        // 660px  bot-zone edge
+        private const float BandActiveBot = 0.7870f;      // 850px
+        private const float BandBenchBot = 0.7685f;       // 830px
+        private const float BandBotHeader = 0.9583f;      // 1035px
+        private const float BandBotDeck = 0.9167f;        // 990px  deck count under BOT
 
         // ---- palette: deep purple / muted lavender / warm ivory / subtle gold ----
         private static readonly Color ColDeep = Hex(0x241B36);
@@ -63,6 +65,8 @@ namespace TcgBattle.UI
         private GameObject playerActiveFrame;
         private TMP_Text botActiveLabel, playerActiveLabel;
         private HandController hand;
+        private BotHandFan botHandFan;
+        private RectTransform botDeckStack;
         private CardInspectPreview handInspect;
         private CardView _inspectSourceView;   // opponent board view feeding the inspect preview
         private TMP_Text botInfoText, playerDeckText;
@@ -75,11 +79,14 @@ namespace TcgBattle.UI
         private Image turnPillBg;
         private TMP_Text turnPillText;
         private Button mundurBtn, serangBtn, endBtn;
-        private TMP_Text mundurLabel;
+        private TMP_Text mundurLabel, serangLabel;
         private GameObject coinOverlay;
         private Image coinImage, coinRing;
+        private Image coinGlow, coinGlow2;
         private TMP_Text coinText;
         private GameObject overOverlay;
+        private CanvasGroup overGroup;
+        private RectTransform overRibbonRt;
         private TMP_Text overText, overScoreText;
         private Image overDiamondL, overDiamondR;
         private Button againBtn;
@@ -95,6 +102,7 @@ namespace TcgBattle.UI
 
         // responsive layout scaling (k = safeRoot height / reference height)
         private float _k;   // 0 forces the first apply
+        private float _lastLayoutWidth;
         private readonly List<ScaledItem> _registry = new List<ScaledItem>();
 
         // ================================================================== binding
@@ -115,6 +123,8 @@ namespace TcgBattle.UI
             _pendingRetreatPlayer = _pendingRetreatBot = null;
             _pendingPlayerDraw = false;
             statusBaseline = "";
+            if (botHandFan != null)
+                botHandFan.ResetVisuals();
 
             if (canvasRt == null)
                 BuildAll();
@@ -127,6 +137,7 @@ namespace TcgBattle.UI
         {
             m.OnStatus += HandleStatus;
             m.OnStateChanged += RefreshAll;
+            m.OnEnergyChanged += HandleEnergyChanged;
             m.OnCoinFlipped += ShowCoin;
             m.OnTurnStarted += ShowTurnBanner;
             m.OnAttack += HandleAttack;
@@ -136,6 +147,7 @@ namespace TcgBattle.UI
             m.OnRetreated += HandleRetreat;
             m.OnScoreChanged += HandleScore;
             m.OnDrawn += HandleDraw;
+            m.OnSupportDestroyed += HandleSupportDestroyed;
             m.OnGameOver += ShowGameOver;
         }
 
@@ -143,6 +155,7 @@ namespace TcgBattle.UI
         {
             m.OnStatus -= HandleStatus;
             m.OnStateChanged -= RefreshAll;
+            m.OnEnergyChanged -= HandleEnergyChanged;
             m.OnCoinFlipped -= ShowCoin;
             m.OnTurnStarted -= ShowTurnBanner;
             m.OnAttack -= HandleAttack;
@@ -152,6 +165,7 @@ namespace TcgBattle.UI
             m.OnRetreated -= HandleRetreat;
             m.OnScoreChanged -= HandleScore;
             m.OnDrawn -= HandleDraw;
+            m.OnSupportDestroyed -= HandleSupportDestroyed;
             m.OnGameOver -= ShowGameOver;
         }
 
@@ -200,7 +214,10 @@ namespace TcgBattle.UI
             BuildSlots();
             BuildBotHeader();
             BuildPlayerHeader();
+            BuildStaminaBadge();
+            BuildScorePips();
             BuildActionRow();
+            BuildBotHandFan();
             BuildHand();
             BuildOverlays();
             BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
@@ -217,6 +234,18 @@ namespace TcgBattle.UI
             float h = safeRoot.rect.height;
             if (h <= 0f)
                 return;
+
+            // Height-matched CanvasScaler keeps the UI at 1080 units tall, but the useful
+            // hand width still changes with the window aspect. Clamp the fan to the
+            // available middle of the screen (and leave the side badges their margin).
+            float w = safeRoot.rect.width;
+            if (Mathf.Abs(w - _lastLayoutWidth) > 0.5f)
+            {
+                _lastLayoutWidth = w;
+                if (hand != null)
+                    hand.SetViewportWidth(Mathf.Min(1450f, Mathf.Max(640f, w - 180f)));
+            }
+
             float k = Mathf.Clamp(h / RefH, 0.3f, 2f);
             if (Mathf.Abs(k - _k) < 0.004f)
                 return;
@@ -237,6 +266,8 @@ namespace TcgBattle.UI
                     if (v != null)
                         v.ApplyScale(k);
             }
+            if (botHandFan != null)
+                botHandFan.SetScale(k);
             if (botActiveView != null)
                 botActiveView.ApplyScale(k);
             if (playerActiveView != null)
@@ -261,7 +292,7 @@ namespace TcgBattle.UI
             var panel = MakeImage("BotZonePanel", UiSpriteFactory.Rounded, ColBotZone);
             panel.type = Image.Type.Sliced;
             var pr = panel.rectTransform;
-            pr.anchorMin = new Vector2(0f, BandDivider + 0.0042f);
+            pr.anchorMin = new Vector2(0f, BandDivider);
             pr.anchorMax = new Vector2(1f, 1f);
             pr.pivot = new Vector2(0.5f, 0.5f);
             pr.offsetMin = new Vector2(0f, 0f);
@@ -272,22 +303,30 @@ namespace TcgBattle.UI
         private void BuildStageOrnaments()
         {
             // player stage (deep zone): warm ivory pool, gold ring, kawung-style diamonds
-            AddStage(BandActivePlayer, new Vector2(420f, 450f), new Vector2(660f, 330f),
-                new Color(1f, 0.86f, 0.62f, 0.07f), new Color(0.85f, 0.66f, 0.26f, 0.32f));
+            // Keep the decorative shell clear of the first bench slot (slot left edge
+            // sits at x=654px); 320px leaves a 14px breathing gap at 1080p.
+            AddStage(-480f, BandActivePlayer, new Vector2(320f, 330f), new Vector2(440f, 300f),
+                new Color(1f, 0.86f, 0.62f, 0.07f), new Color(0.85f, 0.66f, 0.26f, 0.42f));
 
             // bot stage (lavender zone): ink pool with a deep gold ring
-            AddStage(BandActiveBot, new Vector2(390f, 420f), new Vector2(600f, 300f),
-                new Color(0.14f, 0.11f, 0.21f, 0.07f), new Color(0.55f, 0.42f, 0.15f, 0.30f));
+            AddStage(-480f, BandActiveBot, new Vector2(310f, 320f), new Vector2(430f, 290f),
+                new Color(0.14f, 0.11f, 0.21f, 0.07f), new Color(0.55f, 0.42f, 0.15f, 0.42f));
         }
 
-        private void AddStage(float yPercent, Vector2 ringSize, Vector2 poolSize, Color poolColor, Color ringColor)
+        private void AddStage(float x, float yPercent, Vector2 ringSize, Vector2 poolSize, Color poolColor, Color ringColor)
         {
             var pool = MakeImage("StagePool", UiSpriteFactory.SoftShadow, poolColor);
-            Place(pool.rectTransform, 0f, yPercent, poolSize);
+            Place(pool.rectTransform, x, yPercent, poolSize);
 
             var ring = MakeImage("StageRing", UiSpriteFactory.RoundOutline, ringColor);
             ring.type = Image.Type.Sliced;
-            Place(ring.rectTransform, 0f, yPercent, ringSize);
+            Place(ring.rectTransform, x, yPercent, ringSize);
+
+            // base line: a warm stage edge under each active slot (the focal marker)
+            var baseLine = MakeImage("StageBase", UiSpriteFactory.Rounded, new Color(0.85f, 0.66f, 0.26f, 0.62f));
+            baseLine.type = Image.Type.Sliced;
+            Place(baseLine.rectTransform, x, yPercent, new Vector2(ringSize.x * 0.46f, 6f));
+            baseLine.rectTransform.anchoredPosition = new Vector2(0f, -ringSize.y * 0.5f);
 
             // small diamonds riding the ring's north/south points (kawung hint) -
             // children of the ring so the rescaler keeps them glued to it
@@ -308,23 +347,24 @@ namespace TcgBattle.UI
 
         private void BuildSlots()
         {
-            CreateBenchRow("BotBenchSlot", BandBenchBot, out botBenchSlots, out botBenchFrames,
-                out botBenchLabels, out botBenchViews, "BotBench");
+            CreateBenchRow("BotBenchSlot", BandBenchBot, -220f, 220f, new Vector2(172f, 230f),
+                out botBenchSlots, out botBenchFrames, out botBenchLabels, out botBenchViews, "BotBench");
 
-            var botActiveSlot = Node("BotActiveSlot", 0f, BandActiveBot, new Vector2(300f, 400f));
-            botActiveFrame = MakeSlotFrame(botActiveSlot, "Kosong", 26f, out botActiveLabel);
-            botActiveView = CardView.Create(botActiveSlot, new Vector2(300f, 400f), "BotActive");
+            var botActiveSlot = Node("BotActiveSlot", -480f, BandActiveBot, new Vector2(224f, 300f));
+            botActiveFrame = MakeSlotFrame(botActiveSlot, "Kosong", 22f, out botActiveLabel);
+            botActiveView = CardView.Create(botActiveSlot, new Vector2(224f, 300f), "BotActive");
 
-            CreateBenchRow("PlayerBenchSlot", BandBenchPlayer, out playerBenchSlots, out playerBenchFrames,
-                out playerBenchLabels, out playerBenchViews, "PlayerBench");
+            CreateBenchRow("PlayerBenchSlot", BandBenchPlayer, -220f, 220f, new Vector2(172f, 230f),
+                out playerBenchSlots, out playerBenchFrames, out playerBenchLabels, out playerBenchViews, "PlayerBench");
 
-            var playerActiveSlot = Node("PlayerActiveSlot", 0f, BandActivePlayer, new Vector2(330f, 440f));
-            playerActiveFrame = MakeSlotFrame(playerActiveSlot, "PILIH KARTU\nAKTIFMU", 28f, out playerActiveLabel);
-            playerActiveView = CardView.Create(playerActiveSlot, new Vector2(330f, 440f), "PlayerActive");
+            var playerActiveSlot = Node("PlayerActiveSlot", -480f, BandActivePlayer, new Vector2(224f, 300f));
+            playerActiveFrame = MakeSlotFrame(playerActiveSlot, "PILIH KARTU\nAKTIFMU", 22f, out playerActiveLabel);
+            playerActiveView = CardView.Create(playerActiveSlot, new Vector2(224f, 300f), "PlayerActive");
         }
 
-        private void CreateBenchRow(string slotName, float band, out RectTransform[] slots,
-            out GameObject[] frames, out TMP_Text[] labels, out CardView[] views, string viewPrefix)
+        private void CreateBenchRow(string slotName, float band, float startX, float stepX, Vector2 size,
+            out RectTransform[] slots, out GameObject[] frames, out TMP_Text[] labels,
+            out CardView[] views, string viewPrefix)
         {
             slots = new RectTransform[3];
             frames = new GameObject[3];
@@ -332,81 +372,132 @@ namespace TcgBattle.UI
             views = new CardView[3];
             for (int i = 0; i < 3; i++)
             {
-                var slot = Node($"{slotName}{i}", -178f + i * 178f, band, new Vector2(150f, 210f));
+                var slot = Node($"{slotName}{i}", startX + i * stepX, band, size);
                 slots[i] = slot;
-                frames[i] = MakeSlotFrame(slot, "Kosong", 22f, out labels[i]);
-                views[i] = CardView.Create(slot, new Vector2(150f, 210f), $"{viewPrefix}{i}");
+                frames[i] = MakeSlotFrame(slot, "Kosong", 18f, out labels[i]);
+                views[i] = CardView.Create(slot, size, $"{viewPrefix}{i}");
             }
         }
 
         private void BuildBotHeader()
         {
-            var label = MakeText("BotLabel", null, 34, ColInk, TextAlignmentOptions.Left, bold: true);
-            label.characterSpacing = 5f;
-            Place(label.rectTransform, -330f, BandBotHeader, new Vector2(240f, 44f));
+            var group = NodeLeft("BotHeader", 80f, BandBotHeader, new Vector2(480f, 44f));
+            var label = MakeText("BotLabel", group, 26, ColInk, TextAlignmentOptions.Left, bold: true);
+            label.characterSpacing = 4f;
+            PlaceLocal(label.rectTransform, 0f, 0f, new Vector2(160f, 40f));
             label.text = "BOT";
 
-            botPips = new Image[3];
-            for (int i = 0; i < 3; i++)
-            {
-                var pip = MakeImage($"BotPip{i}", UiSpriteFactory.Diamond, ColBotPipEmpty);
-                Place(pip.rectTransform, -170f + i * 46f, BandBotHeader, new Vector2(30f, 30f));
-                botPips[i] = pip;
-            }
+            // Score pips live beside the right-rail stamina badges (BuildScorePips),
+            // keeping the BOT header quiet.
 
-            // bot header sits on the lavender zone: dark number for contrast
-            CreateEnergyWidget("BotEnergy", BandBotHeader, ColInk, out botEnergyText);
-
-            botInfoText = MakeText("BotInfo", null, 24, ColInkInfo, TextAlignmentOptions.Right);
-            Place(botInfoText.rectTransform, 350f, BandBotHeader, new Vector2(340f, 40f));
+            // Deck count only - the hand itself is the face-down fan, never a number.
+            botInfoText = MakeText("BotInfo", null, 18, ColInkInfo, TextAlignmentOptions.Left);
+            PlaceLeft(botInfoText.rectTransform, 80f, BandBotDeck, new Vector2(240f, 30f));
         }
 
         private void BuildPlayerHeader()
         {
-            var label = MakeText("KamuLabel", null, 34, ColIvory, TextAlignmentOptions.Left, bold: true);
-            label.characterSpacing = 5f;
-            Place(label.rectTransform, -330f, BandPlayerHeader, new Vector2(240f, 44f));
+            var group = NodeLeft("PlayerHeader", 80f, BandPlayerInfo, new Vector2(480f, 44f));
+            var label = MakeText("KamuLabel", group, 26, ColIvory, TextAlignmentOptions.Left, bold: true);
+            label.characterSpacing = 4f;
+            PlaceLocal(label.rectTransform, 0f, 0f, new Vector2(160f, 40f));
             label.text = "KAMU";
 
+            // Score pips live beside the right-rail stamina badge (BuildScorePips).
+
+            playerDeckText = MakeText("PlayerDeckText", null, 20, ColIvoryDim, TextAlignmentOptions.Left);
+            PlaceLeft(playerDeckText.rectTransform, 80f, BandPlayerDeck, new Vector2(320f, 32f));
+        }
+
+        /// <summary>
+        /// Minimal right-rail stamina: a diamond fraction for the player and a smaller
+        /// secondary badge for the bot. The denominator comes from BattleRules.EnergyCap.
+        /// </summary>
+        private void BuildStaminaBadge()
+        {
+            var playerRoot = NodeRight("PlayerStamina", 110f, 0.435f, new Vector2(148f, 148f));
+            var playerOuter = MakeChildImage(playerRoot, "Outer", UiSpriteFactory.Diamond,
+                new Color(0.85f, 0.66f, 0.26f, 0.88f), Vector2.zero, new Vector2(146f, 146f));
+            playerOuter.raycastTarget = false;
+            var playerInner = MakeChildImage(playerRoot, "Fill", UiSpriteFactory.Diamond,
+                new Color(0.10f, 0.07f, 0.18f, 0.97f), Vector2.zero, new Vector2(134f, 134f));
+            playerInner.raycastTarget = false;
+
+            playerEnergyText = MakeText("PlayerStaminaText", playerRoot, 34, ColIvory,
+                TextAlignmentOptions.Center, bold: true);
+            Stretch(playerEnergyText.rectTransform, 10f, 24f, 10f, 16f);
+            playerEnergyText.text = "0/" + BattleRules.EnergyCap;
+
+            var playerCaption = MakeText("PlayerStaminaCaption", playerRoot, 10, ColGold,
+                TextAlignmentOptions.Center, bold: true);
+            playerCaption.characterSpacing = 1.5f;
+            PlaceCenter(playerCaption.rectTransform, new Vector2(0f, -44f), new Vector2(120f, 16f));
+            playerCaption.text = "STAMINA";
+
+            var botRoot = NodeRight("BotStamina", 110f, 0.7800f, new Vector2(74f, 74f));
+            var botOuter = MakeChildImage(botRoot, "Outer", UiSpriteFactory.Diamond,
+                new Color(0.55f, 0.42f, 0.15f, 0.72f), Vector2.zero, new Vector2(72f, 72f));
+            botOuter.raycastTarget = false;
+            var botInner = MakeChildImage(botRoot, "Fill", UiSpriteFactory.Diamond,
+                new Color(0.10f, 0.07f, 0.18f, 0.94f), Vector2.zero, new Vector2(64f, 64f));
+            botInner.raycastTarget = false;
+
+            botEnergyText = MakeText("BotStaminaText", botRoot, 15, ColIvory,
+                TextAlignmentOptions.Center, bold: true);
+            Stretch(botEnergyText.rectTransform, 4f, 13f, 4f, 8f);
+            botEnergyText.text = "0/" + BattleRules.EnergyCap;
+
+            var botCaption = MakeText("BotStaminaCaption", botRoot, 7, ColGold,
+                TextAlignmentOptions.Center, bold: true);
+            PlaceCenter(botCaption.rectTransform, new Vector2(0f, -22f), new Vector2(64f, 10f));
+            botCaption.text = "BOT";
+            botCaption.characterSpacing = 0.8f;
+        }
+
+        /// <summary>
+        /// Three score diamonds per side, parked immediately left of that side's
+        /// stamina badge. This clears the left headers/deck lines and keeps score and
+        /// stamina in one right-rail cluster for both the player and the bot.
+        /// </summary>
+        private void BuildScorePips()
+        {
+            var botGroup = NodeRight("BotScorePips", 230f, 0.7800f, new Vector2(140f, 44f));
+            botPips = new Image[3];
+            for (int i = 0; i < 3; i++)
+            {
+                float x = -40f + i * 40f;
+                var socket = MakeImage($"BotPipSocket{i}", UiSpriteFactory.Ring,
+                    new Color(0f, 0f, 0f, 0.22f), botGroup);
+                PlaceCenter(socket.rectTransform, new Vector2(x, 0f), new Vector2(32f, 32f));
+                var pip = MakeImage($"BotPip{i}", UiSpriteFactory.Diamond, ColBotPipEmpty, botGroup);
+                PlaceCenter(pip.rectTransform, new Vector2(x, 0f), new Vector2(24f, 24f));
+                botPips[i] = pip;
+            }
+
+            var playerGroup = NodeRight("PlayerScorePips", 265f, 0.435f, new Vector2(140f, 44f));
             playerPips = new Image[3];
             for (int i = 0; i < 3; i++)
             {
-                var pip = MakeImage($"PlayerPip{i}", UiSpriteFactory.Diamond, ColPlayerPipEmpty);
-                Place(pip.rectTransform, -170f + i * 46f, BandPlayerHeader, new Vector2(30f, 30f));
+                float x = -40f + i * 40f;
+                var socket = MakeImage($"PlayerPipSocket{i}", UiSpriteFactory.Ring,
+                    new Color(1f, 1f, 1f, 0.16f), playerGroup);
+                PlaceCenter(socket.rectTransform, new Vector2(x, 0f), new Vector2(32f, 32f));
+                var pip = MakeImage($"PlayerPip{i}", UiSpriteFactory.Diamond, ColPlayerPipEmpty, playerGroup);
+                PlaceCenter(pip.rectTransform, new Vector2(x, 0f), new Vector2(24f, 24f));
                 playerPips[i] = pip;
             }
-
-            CreateEnergyWidget("PlayerEnergy", BandPlayerHeader, ColIvory, out playerEnergyText);
-
-            playerDeckText = MakeText("PlayerDeckText", null, 24, ColIvoryDim, TextAlignmentOptions.Right);
-            Place(playerDeckText.rectTransform, 350f, BandPlayerHeader, new Vector2(340f, 40f));
-        }
-
-        private void CreateEnergyWidget(string baseName, float band, Color numberColor, out TMP_Text numberText)
-        {
-            var orb = MakeImage(baseName + "Orb", UiSpriteFactory.Circle, ColGoldBright);
-            Place(orb.rectTransform, 56f, band, new Vector2(30f, 30f));
-
-            var orbRing = MakeImage(baseName + "OrbRing", UiSpriteFactory.Ring, new Color(0f, 0f, 0f, 0.45f));
-            var ringRt = orbRing.rectTransform;
-            ringRt.SetParent(orb.rectTransform, false);
-            Stretch(ringRt, -2, -2, -2, -2);
-
-            numberText = MakeText(baseName + "Text", null, 30, numberColor, TextAlignmentOptions.Left, bold: true);
-            Place(numberText.rectTransform, 104f, band, new Vector2(68f, 40f));
-            numberText.text = "0";
         }
 
         private void BuildActionRow()
         {
-            // ---- status pill (own band between the player's active slot and the buttons) ----
+            // ---- one compact control bar between the two battlefields ----
             var statusShadow = MakeImage("StatusShadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.35f));
             this.statusShadow = statusShadow;
-            Place(statusShadow.rectTransform, 0f, BandStatus - 0.003f, new Vector2(1040f, 96f));
+            Place(statusShadow.rectTransform, -410f, BandStatus - 0.003f, new Vector2(600f, 52f));
 
             statusPill = MakeImage("StatusPill", UiSpriteFactory.Rounded, ColIvory);
             statusPill.type = Image.Type.Sliced;
-            Place(statusPill.rectTransform, 0f, BandStatus, new Vector2(1000f, 58f));
+            Place(statusPill.rectTransform, -410f, BandStatus, new Vector2(560f, 44f));
 
             var statusRing = MakeImage("StatusRing", UiSpriteFactory.RoundOutline, new Color(0.85f, 0.66f, 0.26f, 0.35f));
             statusRing.type = Image.Type.Sliced;
@@ -414,29 +505,36 @@ namespace TcgBattle.UI
             ringRt.SetParent(statusPill.rectTransform, false);
             Stretch(ringRt, 2, 2, 2, 2);
 
-            statusText = MakeText("StatusText", statusPill.rectTransform, 27, ColInk, TextAlignmentOptions.Center, bold: true);
-            Stretch(statusText.rectTransform, 24, 4, 24, 6);
+            statusText = MakeText("StatusText", statusPill.rectTransform, 22, ColInk, TextAlignmentOptions.Center, bold: true);
+            Stretch(statusText.rectTransform, 18, 3, 18, 4);
+            statusText.enableAutoSizing = true;
+            statusText.fontSizeMin = 14f;
+            statusText.fontSizeMax = 22f;
 
-            // ---- divider ornament row: line / diamond / turn pill / diamond / line ----
-            var lineL = MakeImage("DivLineL", null, new Color(1f, 1f, 1f, 0.25f));
-            Place(lineL.rectTransform, -376f, BandDivider, new Vector2(320f, 3f));
-            var lineR = MakeImage("DivLineR", null, new Color(1f, 1f, 1f, 0.25f));
-            Place(lineR.rectTransform, 376f, BandDivider, new Vector2(320f, 3f));
-            var dL = MakeImage("DivDiamondL", UiSpriteFactory.Diamond, new Color(0.85f, 0.66f, 0.26f, 0.75f));
-            Place(dL.rectTransform, -188f, BandDivider, new Vector2(16f, 16f));
-            var dR = MakeImage("DivDiamondR", UiSpriteFactory.Diamond, new Color(0.85f, 0.66f, 0.26f, 0.75f));
-            Place(dR.rectTransform, 188f, BandDivider, new Vector2(16f, 16f));
+            // Bot-zone edge: a thin gold-topped divider spanning the desktop width.
+            var divLine = MakeImage("DivLine", null, new Color(0.85f, 0.66f, 0.26f, 0.38f));
+            var dl = divLine.rectTransform;
+            dl.anchorMin = new Vector2(0f, BandDivider);
+            dl.anchorMax = new Vector2(1f, BandDivider);
+            dl.pivot = new Vector2(0.5f, 0.5f);
+            dl.offsetMin = new Vector2(80f, -1.5f);
+            dl.offsetMax = new Vector2(-80f, 1.5f);
+            var divDiamond = MakeImage("DivDiamond", UiSpriteFactory.Diamond, new Color(0.85f, 0.66f, 0.26f, 0.75f));
+            Place(divDiamond.rectTransform, 0f, BandDivider, new Vector2(14f, 14f));
 
             turnPillBg = MakeImage("TurnPill", UiSpriteFactory.Rounded, ColPanelInk);
             turnPillBg.type = Image.Type.Sliced;
-            Place(turnPillBg.rectTransform, 0f, BandDivider, new Vector2(320f, 46f));
-            turnPillText = MakeText("TurnPillText", turnPillBg.rectTransform, 24, ColIvory, TextAlignmentOptions.Center, bold: true);
-            turnPillText.characterSpacing = 3f;
-            Stretch(turnPillText.rectTransform, 8, 2, 8, 2);
+            Place(turnPillBg.rectTransform, -775f, BandStatus, new Vector2(170f, 34f));
+            turnPillText = MakeText("TurnPillText", turnPillBg.rectTransform, 16, ColIvory, TextAlignmentOptions.Center, bold: true);
+            turnPillText.characterSpacing = 1.2f;
+            Stretch(turnPillText.rectTransform, 6, 2, 6, 2);
+            turnPillText.enableAutoSizing = true;
+            turnPillText.fontSizeMin = 11f;
+            turnPillText.fontSizeMax = 16f;
 
             // ---- action buttons ----
-            mundurBtn = MakeButton("MundurBtn", "MUNDUR", 27f, ColIvory, ColInk,
-                -352f, BandButtons, new Vector2(288f, 88f));
+            mundurBtn = MakeButton("MundurBtn", "MUNDUR", 22f, ColIvory, ColInk,
+                0f, BandButtons, new Vector2(170f, 60f));
             mundurLabel = mundurBtn.GetComponentInChildren<TMP_Text>();
             mundurBtn.onClick.AddListener(() =>
             {
@@ -444,21 +542,57 @@ namespace TcgBattle.UI
                     battle.Retreat();
             });
 
-            serangBtn = MakeButton("SerangBtn", "SERANG", 29f, ColGoldBright, Hex(0x3A2506),
-                0f, BandButtons, new Vector2(316f, 88f));
+            serangBtn = MakeButton("SerangBtn", "SERANG", 24f, ColGoldBright, Hex(0x3A2506),
+                200f, BandButtons, new Vector2(180f, 60f));
+            serangLabel = serangBtn.GetComponentInChildren<TMP_Text>();
             serangBtn.onClick.AddListener(() =>
             {
                 if (battle != null)
                     battle.Attack();
             });
 
-            endBtn = MakeButton("EndTurnBtn", "AKHIRI GILIRAN", 25f, ColInkSoft, ColIvory,
-                352f, BandButtons, new Vector2(288f, 88f));
+            endBtn = MakeButton("EndTurnBtn", "AKHIRI GILIRAN", 20f, ColInkSoft, ColIvory,
+                430f, BandButtons, new Vector2(220f, 60f));
             endBtn.onClick.AddListener(() =>
             {
                 if (battle != null)
                     battle.EndPlayerTurn();
             });
+        }
+
+        /// <summary>
+        /// Opponent hand representation: generic face-down backs only. The fan sits in
+        /// the top-right free space, clear of the bot's active/bench cards, deck count,
+        /// secondary stamina badge and the central action bar.
+        /// </summary>
+        private void BuildBotHandFan()
+        {
+            var fanGo = new GameObject("BotHandFan", typeof(RectTransform));
+            var fanRt = (RectTransform)fanGo.transform;
+            fanRt.SetParent(safeRoot, false);
+            fanRt.anchorMin = fanRt.anchorMax = new Vector2(1f, 0.9259f);
+            fanRt.pivot = new Vector2(0.5f, 0.5f);
+            fanRt.sizeDelta = new Vector2(440f, 200f);
+            fanRt.anchoredPosition = new Vector2(-410f, 0f);
+
+            var deckGo = new GameObject("BotDeckStack", typeof(RectTransform));
+            var deckRt = (RectTransform)deckGo.transform;
+            deckRt.SetParent(safeRoot, false);
+            deckRt.anchorMin = deckRt.anchorMax = new Vector2(1f, 0.9630f);
+            deckRt.pivot = new Vector2(0.5f, 0.5f);
+            deckRt.sizeDelta = new Vector2(74f, 100f);
+            deckRt.anchoredPosition = new Vector2(-130f, 0f);
+            botDeckStack = deckRt;
+
+            botHandFan = fanGo.AddComponent<BotHandFan>();
+            botHandFan.Initialize(fanRt, deckRt, card =>
+            {
+                var view = FindBoardView(card);
+                if (view != null)
+                    return view.Root;
+                return statusPill != null ? statusPill.rectTransform : null;
+            });
+            botHandFan.BuildDeckStack(deckRt);
         }
 
         private void BuildHand()
@@ -469,7 +603,7 @@ namespace TcgBattle.UI
             var rt = (RectTransform)hand.transform;
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, BandHand);
             rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(1020f, 340f);
+            rt.sizeDelta = new Vector2(1500f, 320f);
             rt.anchoredPosition = Vector2.zero;
             hand.SetClickHandler(OnCardClicked);
         }
@@ -489,6 +623,13 @@ namespace TcgBattle.UI
             var pedestal = MakeChildImage(coinRt, "Pedestal", UiSpriteFactory.SoftShadow,
                 new Color(0f, 0f, 0f, 0.5f), new Vector2(0f, -60f), new Vector2(250f, 46f));
 
+            // halo rings: tinted stock sprites (SoftShadow's texture is black, so it can't
+            // be tinted gold - the ring sprite can)
+            coinGlow2 = MakeChildImage(coinRt, "CoinGlowOuter", UiSpriteFactory.Ring,
+                new Color(0.95f, 0.76f, 0.35f, 0.14f), new Vector2(0f, 87f), new Vector2(312f, 312f));
+            coinGlow = MakeChildImage(coinRt, "CoinGlow", UiSpriteFactory.Ring,
+                new Color(0.95f, 0.76f, 0.35f, 0.28f), new Vector2(0f, 87f), new Vector2(250f, 250f));
+
             coinRing = MakeChildImage(coinRt, "CoinRing", UiSpriteFactory.Ring,
                 new Color(0.85f, 0.66f, 0.26f, 0.85f), new Vector2(0f, 87f), new Vector2(184f, 184f));
 
@@ -504,8 +645,8 @@ namespace TcgBattle.UI
             var coinDr = MakeChildImage(coinRt, "CoinDiamondR", UiSpriteFactory.Diamond,
                 new Color(0.85f, 0.66f, 0.26f, 0.8f), new Vector2(270f, -54f), new Vector2(20f, 20f));
 
-            coinText = MakeText("CoinText", coinRt, 42, ColIvory, TextAlignmentOptions.Center, bold: true);
-            Place(coinText.rectTransform, 0f, 0.472f, new Vector2(460f, 76f));
+            coinText = MakeText("CoinText", coinRt, 32, ColIvory, TextAlignmentOptions.Center, bold: true);
+            Place(coinText.rectTransform, 0f, 0.45f, new Vector2(460f, 64f));
             coinOverlay.SetActive(false);
 
             // ---------------- game over overlay ----------------
@@ -514,36 +655,48 @@ namespace TcgBattle.UI
             var overRt = (RectTransform)overGo.transform;
             overRt.SetParent(safeRoot, false);
             StretchFull(overRt);
+
+            // The board/hand use nested canvases, so a sibling-only overlay can still be
+            // drawn behind them. Put the result modal on its own high-sorting canvas.
+            var overCanvas = overGo.AddComponent<Canvas>();
+            overCanvas.overrideSorting = true;
+            overCanvas.sortingOrder = 5000;
+            overGo.AddComponent<GraphicRaycaster>();
+
             var overDim = overGo.AddComponent<Image>();
-            overDim.color = new Color(0.04f, 0.02f, 0.08f, 0.62f);
+            overDim.color = new Color(0.04f, 0.02f, 0.08f, 0.72f);
             overDim.raycastTarget = true; // block the board behind the result
 
+            overGroup = overGo.AddComponent<CanvasGroup>();
+            overGroup.alpha = 0f; // fades in on ShowGameOver
+
             var panel = MakeChildImage(overRt, "Panel", UiSpriteFactory.Rounded,
-                new Color(0.11f, 0.08f, 0.19f, 0.97f), Vector2.zero, new Vector2(880f, 680f));
+                new Color(0.11f, 0.08f, 0.19f, 1f), Vector2.zero, new Vector2(820f, 460f));
             panel.type = Image.Type.Sliced;
 
             var panelRing = MakeChildImage(overRt, "PanelRing", UiSpriteFactory.RoundOutline,
-                new Color(0.85f, 0.66f, 0.26f, 0.45f), Vector2.zero, new Vector2(866f, 666f));
+                new Color(0.85f, 0.66f, 0.26f, 0.45f), Vector2.zero, new Vector2(806f, 446f));
             panelRing.type = Image.Type.Sliced;
 
             var ribbon = MakeChildImage(overRt, "Ribbon", UiSpriteFactory.Rounded, ColIvory,
-                new Vector2(0f, 246f), new Vector2(740f, 118f));
+                new Vector2(0f, 150f), new Vector2(640f, 92f));
             ribbon.type = Image.Type.Sliced;
+            overRibbonRt = ribbon.rectTransform;
 
             overDiamondL = MakeChildImage(overRt, "OverDiamondL", UiSpriteFactory.Diamond, ColGoldBright,
-                new Vector2(-404f, 246f), new Vector2(30f, 30f));
+                new Vector2(-350f, 150f), new Vector2(26f, 26f));
             overDiamondR = MakeChildImage(overRt, "OverDiamondR", UiSpriteFactory.Diamond, ColGoldBright,
-                new Vector2(404f, 246f), new Vector2(30f, 30f));
+                new Vector2(350f, 150f), new Vector2(26f, 26f));
 
-            overText = MakeText("OverText", ribbon.transform, 54, ColInk, TextAlignmentOptions.Center, bold: true);
+            overText = MakeText("OverText", ribbon.transform, 42, ColInk, TextAlignmentOptions.Center, bold: true);
             overText.characterSpacing = 2f;
             Stretch(overText.rectTransform, 16, 6, 16, 6);
 
-            overScoreText = MakeText("OverScore", overRt, 34, ColIvory, TextAlignmentOptions.Center);
-            Place(overScoreText.rectTransform, 0f, 0.556f, new Vector2(880f, 70f));
+            overScoreText = MakeText("OverScore", overRt, 28, ColIvory, TextAlignmentOptions.Center);
+            Place(overScoreText.rectTransform, 0f, 0.535f, new Vector2(760f, 54f));
 
-            againBtn = MakeButton("AgainBtn", "MAIN LAGI", 30f, ColGoldBright, Hex(0x3A2506),
-                0f, 0.411f, new Vector2(340f, 96f), overRt);
+            againBtn = MakeButton("AgainBtn", "MAIN LAGI", 24f, ColGoldBright, Hex(0x3A2506),
+                0f, 0.385f, new Vector2(300f, 80f), overRt);
             againBtn.onClick.AddListener(() =>
             {
                 if (starter != null)
@@ -591,19 +744,25 @@ namespace TcgBattle.UI
             if (setup)
             {
                 foreach (var v in hand.Views)
-                    v.SetSelected(v.Card != null && v.Card.IsBattle);
+                    v.SetEligible(v.Card != null && battle.CanSelectStartingActive(v.Card));
                 hand.Layout(); // lift eligible starting cards
             }
             if (_pendingPlayerDraw && hand.Views.Count > 0)
             {
                 _pendingPlayerDraw = false;
-                StartCoroutine(UiFx.Punch(hand.Views[hand.Views.Count - 1].Root, 1.2f, 0.35f));
+                // wait out the fan tween so the punch doesn't fight the layout scale
+                StartCoroutine(PunchAfter(hand.Views[hand.Views.Count - 1].Root, 0.2f, 1.2f, 0.35f));
             }
 
-            // ---- header counters ----
-            botEnergyText.text = battle.Bot.Energy.ToString();
-            playerEnergyText.text = battle.Player.Energy.ToString();
-            botInfoText.text = $"DEK {battle.Bot.Deck.Count} \u00b7 TANGAN {battle.Bot.Hand.Count}";
+            // ---- opponent hidden hand: backs only, never faces or a hand count ----
+            if (botHandFan != null)
+                botHandFan.Sync(battle.Bot.Hand);
+            if (botDeckStack != null)
+                botDeckStack.gameObject.SetActive(battle.Bot.Deck.Count > 0);
+
+            // ---- header counters / stamina rail ----
+            RefreshEnergyTexts();
+            botInfoText.text = $"DEK {battle.Bot.Deck.Count}";
             playerDeckText.text = $"DEK {battle.Player.Deck.Count} \u00b7 TANGAN {battle.Player.Hand.Count}";
 
             SetPips(botPips, battle.Bot.Points, ColBotPipEmpty);
@@ -630,9 +789,21 @@ namespace TcgBattle.UI
                     break;
             }
 
-            mundurBtn.interactable = myTurn && battle.CanRetreat(out _);
-            serangBtn.interactable = myTurn && battle.CanAttack(out _);
+            bool canRetreat = myTurn && battle.CanRetreat(out _);
+            bool canAttack = myTurn && battle.CanAttack(out _);
+            mundurBtn.interactable = canRetreat;
+            serangBtn.interactable = canAttack;
             endBtn.interactable = myTurn;
+
+            // Valid-target affordances (visual only): the enemy active gets a warm red
+            // ring while an attack is legal; bench battle cards get a soft gold ring
+            // while a retreat is legal. Clicks keep their normal rules.
+            botActiveView.SetTarget(canAttack, true);
+            for (int i = 0; i < playerBenchViews.Length; i++)
+            {
+                var bv = playerBenchViews[i];
+                bv.SetTarget(canRetreat && bv.Card != null && bv.Card.IsBattle, false);
+            }
 
             if (mundurLabel != null)
             {
@@ -643,36 +814,45 @@ namespace TcgBattle.UI
                 else
                     mundurLabel.text = $"MUNDUR \u00b7{battle.Player.Active.RetreatCost}";
             }
+            if (serangLabel != null)
+            {
+                if (battle.Player.Active == null)
+                    serangLabel.text = "SERANG";
+                else if (battle.Player.Active.AttackCost == 0)
+                    serangLabel.text = "SERANG \u00b7GRATIS";
+                else
+                    serangLabel.text = $"SERANG \u00b7{battle.Player.Active.AttackCost}";
+            }
 
             // ---- queued cosmetic animations (after rebind so views show new cards) ----
             if (_pendingPromoPlayer != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingPromoPlayer), new Vector2(0f, -170f * _k)); // rises from the bench
+                AnimateSlotIn(FindBoardView(_pendingPromoPlayer), new Vector2(250f, -22f) * _k); // from the bench to the left
                 _pendingPromoPlayer = null;
             }
             if (_pendingPromoBot != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingPromoBot), new Vector2(0f, 170f * _k)); // drops from the bench
+                AnimateSlotIn(FindBoardView(_pendingPromoBot), new Vector2(250f, 22f) * _k);
                 _pendingPromoBot = null;
             }
             if (_pendingBenchPlayer != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingBenchPlayer), new Vector2(0f, -200f * _k)); // hand sits below the bench
+                AnimateSlotIn(FindBoardView(_pendingBenchPlayer), new Vector2(0f, -190f * _k)); // hand sits below
                 _pendingBenchPlayer = null;
             }
             if (_pendingBenchBot != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingBenchBot), new Vector2(0f, 220f * _k));
+                AnimateSlotIn(FindBoardView(_pendingBenchBot), new Vector2(0f, 190f * _k));
                 _pendingBenchBot = null;
             }
             if (_pendingRetreatPlayer != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingRetreatPlayer), new Vector2(0f, 140f * _k)); // active sits above the bench
+                AnimateSlotIn(FindBoardView(_pendingRetreatPlayer), new Vector2(250f, -22f) * _k);
                 _pendingRetreatPlayer = null;
             }
             if (_pendingRetreatBot != null)
             {
-                AnimateSlotIn(FindBoardView(_pendingRetreatBot), new Vector2(0f, -140f * _k));
+                AnimateSlotIn(FindBoardView(_pendingRetreatBot), new Vector2(250f, 22f) * _k);
                 _pendingRetreatBot = null;
             }
         }
@@ -698,6 +878,8 @@ namespace TcgBattle.UI
             {
                 var card = i < bench.Count ? bench[i] : null;
                 views[i].Bind(card, CardDisplayMode.Bench);
+                // bench cards recede slightly so the active stays the focal point
+                views[i].SetDimmed(card != null, 0.08f);
                 views[i].Clicked -= OnCardClicked;
                 views[i].Clicked += OnCardClicked;
                 if (botInspect)
@@ -725,6 +907,24 @@ namespace TcgBattle.UI
             // during a turn banner the pill shows the banner; the baseline is restored after
             if (turnBannerRoutine == null && statusText != null)
                 statusText.text = msg;
+        }
+
+        private void HandleEnergyChanged(Side side)
+        {
+            // Energy can change without a board rebind (retreat/attack/steal). Update the
+            // rail immediately; the value itself remains owned by BattleManager.
+            RefreshEnergyTexts();
+        }
+
+        private void RefreshEnergyTexts()
+        {
+            if (battle == null)
+                return;
+            string fraction = "/" + BattleRules.EnergyCap;
+            if (playerEnergyText != null)
+                playerEnergyText.text = battle.Player.Energy + fraction;
+            if (botEnergyText != null)
+                botEnergyText.text = battle.Bot.Energy + fraction;
         }
 
         private void OnCardClicked(CardView view)
@@ -794,20 +994,35 @@ namespace TcgBattle.UI
             var defView = FindBoardView(def);
             float dir = side == Side.Player ? 1f : -1f;
 
+            // Everything before the first yield runs before the manager applies damage:
+            // capture the post-damage HP now so the bar can hold pre-damage, then drain
+            // on the impact frame (0.14s into the 0.30s lunge = its peak).
+            int targetHp = Mathf.Max(0, def.CurrentHp - dmg);
+            if (defView != null && dmg > 0)
+                defView.TweenHpTo(targetHp, def.MaxHp, 0.35f, 0.14f);
+
             if (atkView != null)
-                yield return Lunge(atkView.Root, dir, 0.30f);
-            if (defView != null)
+                StartCoroutine(Lunge(atkView.Root, dir, 0.30f));
+
+            yield return new WaitForSecondsRealtime(0.14f);
+
+            // The manager may already have rebound this view to a promoted card if the
+            // hit was lethal. Never shake/punch the replacement card for the old card's
+            // damage - that stale motion used to leave promoted actives offset sideways.
+            bool defenderStillBound = defView != null &&
+                ReferenceEquals(defView.Card, def) && !def.IsKnockedOut;
+            if (defenderStillBound)
             {
-                StartCoroutine(UiFx.Shake(defView.Root, 9f, 0.28f));
+                StartCoroutine(UiFx.Shake(defView.Root, 8f, 0.26f));
                 StartCoroutine(UiFx.Punch(defView.Root, 1.05f, 0.2f));
-                StartCoroutine(ImpactFlash(defView));
-                // OnAttack fires before the manager applies damage, so the tween target
-                // is the pre-damage HP minus the incoming damage.
-                int targetHp = Mathf.Max(0, def.CurrentHp - dmg);
-                defView.TweenHpTo(targetHp, def.MaxHp);
+                StartCoroutine(ImpactFlash(defView, effective));
             }
 
-            var anchor = defView != null ? defView.Root : (atkView != null ? atkView.Root : null);
+            var anchor = defenderStillBound
+                ? defView.Root
+                : (defView != null && defView.Root.parent is RectTransform slot
+                    ? slot
+                    : (atkView != null ? atkView.Root : null));
             if (anchor != null)
             {
                 string label = dmg <= 0 ? "TERTAHAN" : dmg.ToString();
@@ -816,6 +1031,15 @@ namespace TcgBattle.UI
                 if (effective && dmg > 0)
                     SpawnDamagePopup(anchor, "2x!", ColRed, extra: true);
             }
+
+            // Belt-and-suspenders for non-lethal hits: once the cosmetic motion has
+            // finished, snap surviving board cards back to the slot centre.
+            yield return new WaitForSecondsRealtime(0.45f);
+            if (defenderStillBound && defView != null && ReferenceEquals(defView.Card, def) &&
+                defView.Root != null)
+                defView.Root.anchoredPosition = Vector2.zero;
+            if (atkView != null && ReferenceEquals(atkView.Card, atk) && atkView.Root != null)
+                atkView.Root.anchoredPosition = Vector2.zero;
         }
 
         private IEnumerator Lunge(RectTransform rt, float dir, float duration)
@@ -823,7 +1047,7 @@ namespace TcgBattle.UI
             if (rt == null)
                 yield break;
             Vector2 basePos = rt.anchoredPosition;
-            float reach = 70f * _k;
+            float reach = 82f * _k;
             float t = 0f;
             while (t < duration)
             {
@@ -839,13 +1063,74 @@ namespace TcgBattle.UI
                 rt.anchoredPosition = basePos;
         }
 
-        private IEnumerator ImpactFlash(CardView view)
+        private IEnumerator ImpactFlash(CardView view, bool effective)
         {
-            var flash = MakeChildImage(view.Root, "ImpactFlash", UiSpriteFactory.Rounded,
-                new Color(1f, 1f, 1f, 0.55f), Vector2.zero, view.Root.sizeDelta);
+            if (view == null || safeRoot == null)
+                yield break;
+            // Safe-root space so a KO rebind can never drag the effect onto the promoted card.
+            Vector2 pos = CanvasLocal(view.Root);
+            Vector2 size = view.Root.rect.size;
+
+            SpawnRing(view.Root, effective ? ColGoldBright : ColIvory, 26f, 0.30f);
+
+            var go = new GameObject("ImpactFlash", typeof(RectTransform), typeof(Image));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = pos;
+            var flash = go.GetComponent<Image>();
+            flash.sprite = UiSpriteFactory.Rounded;
             flash.type = Image.Type.Sliced;
             flash.raycastTarget = false;
-            yield return UiFx.FlashOut(flash, 0.22f, 0.55f);
+            yield return UiFx.FlashOut(flash, 0.20f, 0.55f);
+        }
+
+        /// <summary>Expanding outline ring used for impacts, KOs and support destruction.</summary>
+        private void SpawnRing(RectTransform anchor, Color color, float extra, float duration)
+        {
+            if (anchor == null || safeRoot == null)
+                return;
+            var go = new GameObject("FxRing", typeof(RectTransform), typeof(Image));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = anchor.rect.size + new Vector2(extra, extra);
+            rt.anchoredPosition = CanvasLocal(anchor);
+            var img = go.GetComponent<Image>();
+            img.sprite = UiSpriteFactory.RoundOutline;
+            img.type = Image.Type.Sliced;
+            img.color = color;
+            img.raycastTarget = false;
+            StartCoroutine(RingAnim(rt, img, duration));
+        }
+
+        private IEnumerator RingAnim(RectTransform rt, Image img, float duration)
+        {
+            Color baseColor = img.color;
+            float t = 0f;
+            while (t < duration)
+            {
+                if (rt == null || img == null)
+                    yield break;
+                t += Time.unscaledDeltaTime;
+                float k = Mathf.Clamp01(t / duration);
+                float s = Mathf.Lerp(0.94f, 1.18f, Mathf.SmoothStep(0f, 1f, k));
+                rt.localScale = new Vector3(s, s, 1f);
+                img.color = new Color(baseColor.r, baseColor.g, baseColor.b, baseColor.a * (1f - k));
+                yield return null;
+            }
+            if (rt != null)
+                Destroy(rt.gameObject);
+        }
+
+        private IEnumerator PunchAfter(RectTransform rt, float delay, float scaleTo, float duration)
+        {
+            yield return new WaitForSecondsRealtime(delay);
+            if (rt != null)
+                yield return UiFx.Punch(rt, scaleTo, duration);
         }
 
         private void HandleKo(CardInstance card, Side side)
@@ -883,14 +1168,15 @@ namespace TcgBattle.UI
                 Vector2.zero, size - new Vector2(10f, 10f));
             art.preserveAspect = true;
 
-            float koDrift = 60f * _k;
-            yield return UiFx.Move(ghostRt, pos + new Vector2(0f, side == Side.Bot ? koDrift : -koDrift), 0.5f);
+            float koDrift = 46f * _k;
+            SpawnRing(view.Root, new Color(0.94f, 0.45f, 0.42f, 0.85f), 40f, 0.34f);
+            yield return UiFx.Move(ghostRt, pos + new Vector2(0f, side == Side.Bot ? koDrift : -koDrift), 0.38f);
             var c = Color.white;
             float t = 0f;
-            while (t < 0.45f)
+            while (t < 0.38f)
             {
                 t += Time.unscaledDeltaTime;
-                float a = 1f - t / 0.45f;
+                float a = 1f - t / 0.38f;
                 art.color = c = new Color(1f, 1f, 1f, a);
                 backing.color = new Color(0.12f, 0.09f, 0.19f, a);
                 yield return null;
@@ -936,6 +1222,17 @@ namespace TcgBattle.UI
                 _pendingPlayerDraw = true;
         }
 
+        /// <summary>Kucing Liar sniping a bench Mbok Sumi: one-shot destruction feedback.</summary>
+        private void HandleSupportDestroyed(CardInstance card, Side side)
+        {
+            var view = FindBoardView(card);
+            if (view == null)
+                return;
+            SpawnRing(view.Root, new Color(0.94f, 0.45f, 0.42f, 0.85f), 34f, 0.32f);
+            StartCoroutine(UiFx.Shake(view.Root, 7f, 0.24f));
+            SpawnDamagePopup(view.Root, "HANCUR", ColRed);
+        }
+
         private void AnimateSlotIn(CardView view, Vector2 fromOffset)
         {
             if (view == null)
@@ -947,10 +1244,16 @@ namespace TcgBattle.UI
         {
             if (rt == null)
                 yield break;
-            Vector2 to = rt.anchoredPosition;
+            // Board card views are always centred in their slot when at rest. Target
+            // that invariant explicitly rather than capturing the live mid-flight
+            // position (which could bake a previous shake offset into the new card).
+            Vector2 to = Vector2.zero;
             rt.anchoredPosition = to + fromOffset;
             rt.localScale = Vector3.one * 0.75f;
             yield return UiFx.Move(rt, to, 0.28f);
+            // restore full size before the settle punch: UiFx.Punch returns to the scale
+            // it started at (leaving 0.75 here made every promoted/benched card small).
+            rt.localScale = Vector3.one;
             yield return UiFx.Punch(rt, 1.08f, 0.22f);
         }
 
@@ -1016,11 +1319,18 @@ namespace TcgBattle.UI
             var chip = rt.GetComponent<Image>();
             Vector2 start = rt.anchoredPosition;
             Vector2 end = start + new Vector2(0f, small ? 56f : 84f);
+            float startScale = small ? 0.82f : 0.72f;
+            rt.localScale = Vector3.one * startScale;
             while (t < 0.9f)
             {
                 t += Time.unscaledDeltaTime;
                 float k = Mathf.Clamp01(t / 0.9f);
                 rt.anchoredPosition = Vector2.Lerp(start, end, k);
+                // pop in quickly, then settle (the number lands with the hit)
+                float s = t < 0.12f
+                    ? Mathf.Lerp(startScale, 1.06f, t / 0.12f)
+                    : Mathf.Lerp(1.06f, 1f, Mathf.Clamp01((t - 0.12f) / 0.1f));
+                rt.localScale = new Vector3(s, s, 1f);
                 float a = 1f - k * k;
                 if (chip != null)
                     chip.color = WithA(chip.color, Mathf.Clamp01(a * 0.48f));
@@ -1046,8 +1356,10 @@ namespace TcgBattle.UI
                 statusShadow.gameObject.SetActive(false);
             coinImage.color = ColGoldBright;  // reset alpha AND tint (wiped by the previous fade)
             coinRing.color = new Color(0.85f, 0.66f, 0.26f, 0.85f);
+            if (coinGlow != null) coinGlow.color = new Color(0.95f, 0.76f, 0.35f, 0.28f);
+            if (coinGlow2 != null) coinGlow2.color = new Color(0.95f, 0.76f, 0.35f, 0.14f);
             coinText.text = playerFirst ? "KAMU PERTAMA!" : "BOT PERTAMA!";
-            coinText.color = playerFirst ? ColGoldBright : ColRed;
+            coinText.color = playerFirst ? ColGoldBright : ColIvory;
             StartCoroutine(CoinAnim(playerFirst));
         }
 
@@ -1055,7 +1367,7 @@ namespace TcgBattle.UI
         {
             // Coin "flips" by squashing on X, then the result fades out.
             float t = 0f;
-            float flipDuration = 0.8f;
+            float flipDuration = 0.7f;
             Vector3 start = coinImage.rectTransform.localScale;
             while (t < flipDuration)
             {
@@ -1066,11 +1378,13 @@ namespace TcgBattle.UI
                 yield return null;
             }
             coinImage.rectTransform.localScale = start;
-            yield return UiFx.Punch(coinImage.rectTransform, 1.35f, 0.4f);
-            yield return new WaitForSecondsRealtime(0.9f);
-            yield return UiFx.Fade(coinImage, 0f, 0.4f);
-            yield return UiFx.Fade(coinRing, 0f, 0.4f);
-            yield return UiFx.Fade(coinText, 0f, 0.35f);
+            yield return UiFx.Punch(coinImage.rectTransform, 1.35f, 0.35f);
+            yield return new WaitForSecondsRealtime(0.6f);
+            if (coinGlow != null) StartCoroutine(UiFx.Fade(coinGlow, 0f, 0.35f));
+            if (coinGlow2 != null) StartCoroutine(UiFx.Fade(coinGlow2, 0f, 0.35f));
+            yield return UiFx.Fade(coinImage, 0f, 0.35f);
+            yield return UiFx.Fade(coinRing, 0f, 0.35f);
+            yield return UiFx.Fade(coinText, 0f, 0.3f);
             coinOverlay.SetActive(false);
             if (statusPill != null)
                 statusPill.gameObject.SetActive(true);
@@ -1078,7 +1392,13 @@ namespace TcgBattle.UI
                 statusShadow.gameObject.SetActive(true);
             coinImage.color = ColGoldBright;
             coinRing.color = new Color(0.85f, 0.66f, 0.26f, 0.85f);
-            coinText.color = playerFirst ? ColGoldBright : ColRed;
+            if (coinGlow != null) coinGlow.color = new Color(0.95f, 0.76f, 0.35f, 0.28f);
+            if (coinGlow2 != null) coinGlow2.color = new Color(0.95f, 0.76f, 0.35f, 0.14f);
+            // the toss is over but the first turn hasn't started yet: the divider should
+            // prompt the setup pick instead of still reading "LEMPAR KOIN"
+            if (turnPillText != null && battle != null && battle.Phase == Phase.Setup)
+                turnPillText.text = "PILIH KARTU";
+            coinText.color = playerFirst ? ColGoldBright : ColIvory;
 
             if (battle != null && battle.Phase == Phase.Setup)
                 battle.PostLocalStatus("Pilih kartu aktif dari tanganmu!");
@@ -1089,6 +1409,8 @@ namespace TcgBattle.UI
             if (turnBannerRoutine != null)
                 StopCoroutine(turnBannerRoutine);
             turnBannerRoutine = StartCoroutine(TurnBannerAnim(side));
+            if (turnPillBg != null)
+                StartCoroutine(UiFx.Punch(turnPillBg.rectTransform, 1.10f, 0.34f));
 
             // Launch the bot's turn driver.
             if (side == Side.Bot && bot != null)
@@ -1121,16 +1443,45 @@ namespace TcgBattle.UI
         {
             if (overOverlay == null)
                 return;
+            if (turnBannerRoutine != null)
+            {
+                StopCoroutine(turnBannerRoutine);
+                turnBannerRoutine = null;
+            }
             if (hand != null)
                 hand.HideInspectPreview();   // inspection preview never outlives the battle
             _inspectSourceView = null;       // board-sourced previews: forget the source slot too
+            overOverlay.transform.SetAsLastSibling(); // result modal must sit above the board, HUD and hand
             overOverlay.SetActive(true);
+            if (overGroup != null)
+            {
+                overGroup.alpha = 0f;
+                StartCoroutine(GameOverIn());
+            }
+            if (overRibbonRt != null)
+                StartCoroutine(UiFx.Punch(overRibbonRt, 1.04f, 0.32f));
             bool playerWins = winner == Side.Player;
             overText.text = playerWins ? "KAMU MENANG!" : "BOT MENANG!";
             var accent = playerWins ? ColGoldBright : ColRed;
             overDiamondL.color = accent;
             overDiamondR.color = accent;
             overScoreText.text = $"Skor akhir  {battle.Player.Points} - {battle.Bot.Points}";
+        }
+
+        /// <summary>Soft fade-in for the result overlay (board is already authoritative).</summary>
+        private IEnumerator GameOverIn()
+        {
+            float t = 0f;
+            const float d = 0.22f;
+            while (t < d)
+            {
+                t += Time.unscaledDeltaTime;
+                if (overGroup != null)
+                    overGroup.alpha = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / d));
+                yield return null;
+            }
+            if (overGroup != null)
+                overGroup.alpha = 1f;
         }
 
         // ================================================================== helpers
@@ -1172,12 +1523,68 @@ namespace TcgBattle.UI
             var go = new GameObject(name, typeof(RectTransform));
             var rt = (RectTransform)go.transform;
             rt.SetParent(safeRoot, false);
-            // Percent-anchored so the portrait layout stays coherent in any Game View aspect.
+            // Percent-anchored so the landscape composition stays coherent in any Game View aspect.
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, yPercent);
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.sizeDelta = size;
             rt.anchoredPosition = new Vector2(x, 0f);
             return rt;
+        }
+
+        private RectTransform NodeLeft(string name, float inset, float yPercent, Vector2 size)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, yPercent);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = new Vector2(inset, 0f);
+            return rt;
+        }
+
+        private RectTransform NodeRight(string name, float inset, float yPercent, Vector2 size)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, yPercent);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = new Vector2(-inset, 0f);
+            return rt;
+        }
+
+        private static void PlaceLocal(RectTransform rt, float x, float y, Vector2 size)
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 0.5f);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = new Vector2(x, y);
+        }
+
+        private static void PlaceLeft(RectTransform rt, float inset, float yPercent, Vector2 size)
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, yPercent);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = new Vector2(inset, 0f);
+        }
+
+        private static void PlaceRight(RectTransform rt, float inset, float yPercent, Vector2 size)
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, yPercent);
+            rt.pivot = new Vector2(1f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = new Vector2(-inset, 0f);
+        }
+
+        private static void PlaceCenter(RectTransform rt, Vector2 pos, Vector2 size)
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = size;
+            rt.anchoredPosition = pos;
         }
 
         private Image MakeImage(string name, Sprite sprite, Color color, Transform parent = null)
@@ -1218,16 +1625,16 @@ namespace TcgBattle.UI
             var img = go.GetComponent<Image>();
             img.sprite = UiSpriteFactory.Rounded;
             img.type = Image.Type.Sliced; // crisp corner radius at any slot size
-            img.color = new Color(0f, 0f, 0f, 0.30f);
+            img.color = new Color(0.08f, 0.05f, 0.13f, 0.55f);
             img.raycastTarget = false;
 
-            var innerRing = MakeImage("InnerRing", UiSpriteFactory.RoundOutline, new Color(1f, 1f, 1f, 0.16f));
+            var innerRing = MakeImage("InnerRing", UiSpriteFactory.RoundOutline, new Color(1f, 1f, 1f, 0.20f));
             innerRing.type = Image.Type.Sliced;
             var ringRt = innerRing.rectTransform;
             ringRt.SetParent(rt, false);
             Stretch(ringRt, 5, 5, 5, 5);
 
-            labelText = MakeText("EmptyLabel", rt, fontSize, new Color(1f, 1f, 1f, 0.55f), TextAlignmentOptions.Center, bold: true);
+            labelText = MakeText("EmptyLabel", rt, fontSize, new Color(1f, 1f, 1f, 0.62f), TextAlignmentOptions.Center, bold: true);
             Stretch(labelText.rectTransform, 6, 4, 6, 4);
             labelText.text = label;
             return go;
@@ -1239,6 +1646,8 @@ namespace TcgBattle.UI
             Transform parent = parentOverride != null ? parentOverride : safeRoot;
 
             var shadow = MakeImage(name + "Shadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.32f));
+            if (parentOverride != null)
+                shadow.rectTransform.SetParent(parentOverride, false);
             Place(shadow.rectTransform, x, yPercent, size + new Vector2(26f, 30f));
             shadow.rectTransform.anchoredPosition += new Vector2(0f, -7f);
 
@@ -1284,7 +1693,7 @@ namespace TcgBattle.UI
             rt.SetParent(safeRoot, false);
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
             rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(320f, 470f);
+            rt.sizeDelta = new Vector2(320f, 414f);
             handInspect = go.AddComponent<CardInspectPreview>();
             hand.SetInspectPreview(handInspect);
         }
