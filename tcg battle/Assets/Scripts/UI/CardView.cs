@@ -21,6 +21,7 @@ namespace TcgBattle.UI
         public CardInstance Card { get; private set; }
         public CardDisplayMode Mode { get; private set; } = CardDisplayMode.Active;
         public bool IsSelected { get; private set; }
+        public bool IsEligible { get; private set; }
         public event Action<CardView> Clicked;
 
         /// <summary>Fires when the pointer enters/leaves this card's raycast area (bubbled from children).</summary>
@@ -30,6 +31,8 @@ namespace TcgBattle.UI
         private Image _backing;
         private Image _frame;          // gold ring on actives, faint ivory on the bench
         private Image _selectedFrame;  // bright ring for selection feedback
+        private Image _eligibleFrame;  // soft ring for "legal pick" cards (setup)
+        private Image _targetFrame;    // action-target ring (attack / retreat affordance)
         private Image _art;
         private Image _dim;
         private Image _elementChip;
@@ -44,6 +47,7 @@ namespace TcgBattle.UI
         private TMP_Text _supportText;
         private float _shownHpPct = 1f;
         private bool _hpTweening;
+        private Coroutine _hpTween;
         private bool _hovered;
         private Color _frameDefault = ColFrameIvory;   // per-mode base frame color, set by Bind
 
@@ -83,18 +87,31 @@ namespace TcgBattle.UI
                 return;
             _root = (RectTransform)transform;
 
+            // shadow first: it must sit behind the frame/target rings, not over them
+            var shadow = MakeImage("Shadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.5f));
+            Stretch(shadow.rectTransform, -26, -26, -26, -26); // symmetric halo around the card
+
             _selectedFrame = MakeImage("SelectedFrame", UiSpriteFactory.RoundOutline,
                 new Color(1f, 0.86f, 0.45f, 1f));
             _selectedFrame.type = Image.Type.Sliced;
             Stretch(_selectedFrame.rectTransform, -11, -11, -11, -11);
             _selectedFrame.gameObject.SetActive(false);
 
+            _eligibleFrame = MakeImage("EligibleFrame", UiSpriteFactory.RoundOutline,
+                new Color(0.95f, 0.80f, 0.45f, 0.75f));
+            _eligibleFrame.type = Image.Type.Sliced;
+            Stretch(_eligibleFrame.rectTransform, -7, -7, -7, -7);
+            _eligibleFrame.gameObject.SetActive(false);
+
+            _targetFrame = MakeImage("TargetFrame", UiSpriteFactory.RoundOutline,
+                new Color(0.94f, 0.52f, 0.46f, 0.78f));
+            _targetFrame.type = Image.Type.Sliced;
+            Stretch(_targetFrame.rectTransform, -13, -13, -13, -13);
+            _targetFrame.gameObject.SetActive(false);
+
             _frame = MakeImage("Frame", UiSpriteFactory.RoundOutline, ColFrameIvory);
             _frame.type = Image.Type.Sliced;
             Stretch(_frame.rectTransform, 1, 1, 1, 1);
-
-            var shadow = MakeImage("Shadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.5f));
-            Stretch(shadow.rectTransform, -26, -26, -26, -26); // symmetric halo around the card
 
             _backing = MakeImage("Backing", UiSpriteFactory.Rounded, ColBacking);
             _backing.type = Image.Type.Sliced;
@@ -189,11 +206,28 @@ namespace TcgBattle.UI
 
         public void Bind(CardInstance card, CardDisplayMode mode)
         {
+            // A view being rebound to a different card must not keep tweening the old
+            // card's HP (the KO/promotion path rebinds in the same frame as the damage).
+            if (!ReferenceEquals(Card, card))
+                StopHpTween();
+
+            bool cardChanged = !ReferenceEquals(Card, card);
             Card = card;
             Mode = mode;
             gameObject.SetActive(card != null);
             if (card == null)
                 return;
+
+            // Board views are laid out by their slot and only ever leave that centre
+            // for cosmetic lunges/shakes. A promoted/retreated card is a different
+            // physical card, so start it from the slot centre instead of inheriting
+            // a stale motion offset from the card it replaces.
+            if (cardChanged && (mode == CardDisplayMode.Active || mode == CardDisplayMode.Bench) && _root != null)
+            {
+                _root.anchoredPosition = Vector2.zero;
+                _root.localRotation = Quaternion.identity;
+                _root.localScale = Vector3.one;
+            }
             EnsureBuilt();
 
             bool isBattle = card.IsBattle;
@@ -218,7 +252,6 @@ namespace TcgBattle.UI
             _frame.gameObject.SetActive(isBoard);
             _frameDefault = mode == CardDisplayMode.Active ? ColFrameGold : ColFrameIvory;
             _frame.color = _frameDefault;
-
             // Info strip: shown only for battle cards on the board.
             var strip = _hpBg.transform.parent.gameObject;
             strip.SetActive(showStrip);
@@ -231,6 +264,8 @@ namespace TcgBattle.UI
             SetDimmed(false);
             SetHovered(false);
             SetSelected(false);
+            SetEligible(false);
+            SetTarget(false, false);
         }
 
         /// <summary>
@@ -246,6 +281,10 @@ namespace TcgBattle.UI
             {
                 _scaled = new List<ScaledItem>();
                 UiRescaler.CaptureTree(_root, _scaled);
+                // Layout systems (HandController fan, slot tweens, attack lunge) own the
+                // root's position; the rescale pass may only resize it.
+                if (_scaled.Count > 0)
+                    _scaled[0].ApplyPosition = false;
                 foreach (var it in _scaled)
                     if (it.RT == _hpText.rectTransform)
                         it.Text = null; // Bind owns this font size
@@ -259,46 +298,68 @@ namespace TcgBattle.UI
         {
             if (_hpFill == null || max <= 0)
                 return;
+            // While a damage tween is running it owns both the fill and the number, so
+            // state refreshes can't snap the bar ahead of the impact.
+            if (_hpTweening)
+                return;
             float pct = Mathf.Clamp01((float)current / max);
-            if (!_hpTweening)
-            {
-                _hpFill.fillAmount = pct;
-                _shownHpPct = pct;
-            }
+            _hpFill.fillAmount = pct;
+            _shownHpPct = pct;
             _hpText.text = $"{current}/{max}";
             _hpFill.color = HpColor(pct);
         }
 
-        /// <summary>Smooth HP bar tween used when damage lands.</summary>
-        public void TweenHpTo(int current, int max, float duration = 0.4f)
+        /// <summary>
+        /// Smooth HP bar tween used when damage lands. A delay holds the pre-damage bar
+        /// until the attack's impact frame; the number counts down with the bar.
+        /// </summary>
+        public void TweenHpTo(int current, int max, float duration = 0.4f, float delay = 0f)
         {
             if (_hpFill == null || max <= 0 || gameObject == null || !gameObject.activeInHierarchy)
                 return;
-            StartCoroutine(TweenHpRoutine(current, max, duration));
+            if (_hpTween != null)
+                StopCoroutine(_hpTween);
+            _hpTweening = true; // synchronously, before the manager's same-frame refresh
+            _hpTween = StartCoroutine(TweenHpRoutine(current, max, duration, delay));
         }
 
-        private System.Collections.IEnumerator TweenHpRoutine(int current, int max, float duration)
+        private void StopHpTween()
         {
-            _hpTweening = true;
+            if (_hpTween != null)
+                StopCoroutine(_hpTween);
+            _hpTween = null;
+            _hpTweening = false;
+        }
+
+        private System.Collections.IEnumerator TweenHpRoutine(int current, int max, float duration, float delay)
+        {
             float from = _shownHpPct;
+            int fromHp = Mathf.RoundToInt(from * max);
             float to = Mathf.Clamp01((float)current / max);
+            if (delay > 0f)
+                yield return new WaitForSecondsRealtime(delay);
             float t = 0f;
             while (t < duration)
             {
                 if (_hpFill == null)
                     break;
                 t += Time.unscaledDeltaTime;
-                float pct = Mathf.Lerp(from, to, Mathf.SmoothStep(0f, 1f, t / duration));
+                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / duration));
+                float pct = Mathf.Lerp(from, to, k);
                 _hpFill.fillAmount = pct;
                 _hpFill.color = HpColor(pct);
+                _hpText.text = $"{Mathf.RoundToInt(Mathf.Lerp(fromHp, current, k))}/{max}";
                 yield return null;
             }
             if (_hpFill != null)
             {
                 _hpFill.fillAmount = to;
+                _hpFill.color = HpColor(to);
+                _hpText.text = $"{current}/{max}";
                 _shownHpPct = to;
             }
             _hpTweening = false;
+            _hpTween = null;
         }
 
         private static Color HpColor(float pct)
@@ -313,6 +374,29 @@ namespace TcgBattle.UI
             IsSelected = selected;
             if (_selectedFrame != null)
                 _selectedFrame.gameObject.SetActive(selected);
+        }
+
+        /// <summary>Soft ring marking a card that is a legal pick right now (setup).</summary>
+        public void SetEligible(bool eligible)
+        {
+            IsEligible = eligible;
+            if (_eligibleFrame != null)
+                _eligibleFrame.gameObject.SetActive(eligible);
+        }
+
+        /// <summary>
+        /// Action-target affordance: harmful = a valid enemy to attack, helpful = a valid
+        /// bench card to retreat to. Purely visual - clicks always keep their normal rules.
+        /// </summary>
+        public void SetTarget(bool targeted, bool harmful)
+        {
+            if (_targetFrame == null)
+                return;
+            _targetFrame.gameObject.SetActive(targeted);
+            if (targeted)
+                _targetFrame.color = harmful
+                    ? new Color(0.94f, 0.52f, 0.46f, 0.78f)
+                    : new Color(0.95f, 0.80f, 0.45f, 0.70f);
         }
 
         /// <summary>Whether the card is currently hover-highlighted.</summary>
@@ -345,10 +429,10 @@ namespace TcgBattle.UI
             Hovered?.Invoke(this, false);
         }
 
-        public void SetDimmed(bool dimmed)
+        public void SetDimmed(bool dimmed, float alpha = 0.55f)
         {
             if (_dim != null)
-                _dim.color = new Color(0f, 0f, 0f, dimmed ? 0.55f : 0f);
+                _dim.color = new Color(0f, 0f, 0f, dimmed ? alpha : 0f);
         }
 
         public void OnPointerClick(PointerEventData eventData)

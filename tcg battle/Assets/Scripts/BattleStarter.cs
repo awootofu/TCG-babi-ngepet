@@ -83,9 +83,11 @@ namespace TcgBattle
 
             var scaler = go.GetComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1080f, 1920f);
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
-            scaler.matchWidthOrHeight = 0.5f;
+            // Height-matched: the landscape composition keeps a fixed 1080-unit height
+            // and gains/loses horizontal room as the window aspect changes.
+            scaler.matchWidthOrHeight = 1f;
         }
 
         private static void EnsureEventSystem()

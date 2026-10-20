@@ -110,15 +110,26 @@ namespace TcgBattle.UI
         {
             var tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
             tex.wrapMode = TextureWrapMode.Clamp;
-            float outer = corner;               // outer corner radius
-            float inner = outer - stroke;       // inner offset
+            float half = size * 0.5f;
+            float radius = corner;
+            float edge = half - radius;         // distance from centre to the straight-edge region
             for (int y = 0; y < size; y++)
             {
                 for (int x = 0; x < size; x++)
                 {
-                    float insideOuter = RoundedAlpha(x, y, size, outer);
-                    float insideInner = RoundedAlpha(x, y, size, inner);
-                    float a = Mathf.Clamp01(insideOuter - insideInner);
+                    // Signed distance to the outer rounded-rect edge. The earlier version
+                    // compared two shapes that shared the same straight edges, so the
+                    // difference cancelled and produced an entirely transparent texture.
+                    float px = Mathf.Abs(x + 0.5f - half);
+                    float py = Mathf.Abs(y + 0.5f - half);
+                    float qx = px - edge;
+                    float qy = py - edge;
+                    float outside = Mathf.Sqrt(Mathf.Max(qx, 0f) * Mathf.Max(qx, 0f)
+                                             + Mathf.Max(qy, 0f) * Mathf.Max(qy, 0f));
+                    float inside = Mathf.Min(Mathf.Max(qx, qy), 0f);
+                    float dist = outside + inside - radius; // negative inside the shape
+                    float a = Mathf.Clamp01(-dist / 1.25f)
+                            * Mathf.Clamp01((dist + stroke) / 1.25f);
                     tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
                 }
             }

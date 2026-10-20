@@ -20,6 +20,8 @@ namespace TcgBattle.UI
         public float FontSize;
         public float FontMin, FontMax;   // used only when auto-sizing is enabled
         public float CharSpacing;
+        /// <summary>False for roots whose position is owned by a layout/animation system.</summary>
+        public bool ApplyPosition = true;
 
         public static ScaledItem Capture(RectTransform rt)
         {
@@ -77,12 +79,15 @@ namespace TcgBattle.UI
             RT.offsetMin = om;
             RT.offsetMax = oM;
 
-            if (!axStretch && !ayStretch)
-                RT.anchoredPosition = Pos * k;
-            else if (!axStretch)
-                RT.anchoredPosition = new Vector2(Pos.x * k, RT.anchoredPosition.y);
-            else if (!ayStretch)
-                RT.anchoredPosition = new Vector2(RT.anchoredPosition.x, Pos.y * k);
+            if (ApplyPosition)
+            {
+                if (!axStretch && !ayStretch)
+                    RT.anchoredPosition = Pos * k;
+                else if (!axStretch)
+                    RT.anchoredPosition = new Vector2(Pos.x * k, RT.anchoredPosition.y);
+                else if (!ayStretch)
+                    RT.anchoredPosition = new Vector2(RT.anchoredPosition.x, Pos.y * k);
+            }
 
             if (Text != null)
             {

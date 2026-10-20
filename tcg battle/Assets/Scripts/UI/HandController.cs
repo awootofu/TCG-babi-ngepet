@@ -16,15 +16,17 @@ namespace TcgBattle.UI
     public class HandController : MonoBehaviour
     {
         [Header("Hand layout")]
-        public float cardWidth = 148f;
-        public float cardHeight = 207f;
-        public float maxSpread = 780f;          // total row width before cards overlap harder
-        public float rotationPerCard = 3.5f;    // degrees at the edges
-        public float liftPerCard = 9f;          // parabolic arc
-        public float selectedLift = 44f;
-        public float selectedScale = 1.06f;
-        public float hoverLift = 18f;      // subtle lift while hovered (selected still wins)
+        public float cardWidth = 176f;
+        public float cardHeight = 236f;
+        public float maxSpread = 1450f;         // total row width before cards overlap harder
+        public float rotationPerCard = 2.4f;    // degrees at the edges
+        public float liftPerCard = 5f;          // parabolic arc
+        public float selectedLift = 30f;
+        public float selectedScale = 1.05f;
+        public float hoverLift = 14f;      // subtle lift while hovered (selected still wins)
         public float hoverScale = 1.03f;
+        public float eligibleLift = 10f;   // "legal pick" hint while choosing a starting active
+        public float eligibleScale = 1.02f;
 
         private readonly List<CardView> _views = new List<CardView>();
         private readonly Dictionary<RectTransform, Coroutine> _tweens = new Dictionary<RectTransform, Coroutine>();
@@ -35,10 +37,11 @@ namespace TcgBattle.UI
         private const float HoverTweenTime = 0.12f;
         private CardInspectPreview _inspectPreview;   // hover inspection overlay (built by BattleUI)
 
-        // reference-scale card sizing (canvas height 1920); cardWidth/cardHeight hold the
+        // reference-scale card sizing (canvas height 1080); cardWidth/cardHeight hold the
         // currently applied (scaled) values used for fan layout
         private Vector2 _baseCard;
-        private float _baseSpread, _baseLift, _baseSelLift, _baseHoverLift;
+        private float _baseSpread, _baseLift, _baseSelLift, _baseHoverLift, _baseEligibleLift;
+        private float _viewportWidth;      // 0 = use maxSpread unchanged
 
         public IReadOnlyList<CardView> Views => _views;
 
@@ -52,9 +55,10 @@ namespace TcgBattle.UI
             _baseLift = liftPerCard;
             _baseSelLift = selectedLift;
             _baseHoverLift = hoverLift;
+            _baseEligibleLift = eligibleLift;
         }
 
-        /// <summary>Apply a uniform layout scale (canvas height / 1920) to the fan.</summary>
+        /// <summary>Apply a uniform layout scale (canvas height / 1080) to the fan.</summary>
         public void SetScale(float k)
         {
             Ensure();
@@ -64,6 +68,21 @@ namespace TcgBattle.UI
             liftPerCard = _baseLift * k;
             selectedLift = _baseSelLift * k;
             hoverLift = _baseHoverLift * k;
+            eligibleLift = _baseEligibleLift * k;
+            Layout(_hasLaidOut);
+        }
+
+        /// <summary>
+        /// Clamp the fan to the usable middle of a wider/narrower landscape window.
+        /// The side insets keep the right-rail stamina badge and the left info rail clear.
+        /// </summary>
+        public void SetViewportWidth(float width)
+        {
+            Ensure();
+            width = Mathf.Max(0f, width);
+            if (Mathf.Abs(width - _viewportWidth) < 0.5f)
+                return;
+            _viewportWidth = width;
             Layout(_hasLaidOut);
         }
 
@@ -215,7 +234,8 @@ namespace TcgBattle.UI
             if (n == 0)
                 return;
 
-            float step = n > 1 ? Mathf.Min(cardWidth * 0.56f, maxSpread / (n - 1)) : 0f;
+            float spread = _viewportWidth > 0f ? Mathf.Min(maxSpread, _viewportWidth) : maxSpread;
+            float step = n > 1 ? Mathf.Min(cardWidth * 0.80f, spread / (n - 1)) : 0f;
             float totalWidth = step * (n - 1);
             float rotStep = n > 1 ? rotationPerCard : 0f;
 
@@ -229,13 +249,15 @@ namespace TcgBattle.UI
                 float t = n > 1 ? (float)i / (n - 1) - 0.5f : 0f;   // -0.5..+0.5
                 bool sel = v.IsSelected;
                 // Selection owns the big lift/scale; hover only adds its smaller pose on
-                // cards that are NOT selected, so the two states stay visually distinct.
+                // cards that are NOT selected; setup eligibility adds a light, persistent
+                // lift so legal starting picks read at a glance without a second "selected".
                 bool hov = !sel && ReferenceEquals(v, _hovered);
-                float lift = (sel ? selectedLift : 0f) + (hov ? hoverLift : 0f);
+                bool elig = !sel && v.IsEligible; // hover adds to the pick pose, never drops it
+                float lift = (sel ? selectedLift : 0f) + (hov ? hoverLift : 0f) + (elig ? eligibleLift : 0f);
                 var pos = new Vector2(-totalWidth / 2f + i * step,
                     Mathf.Abs(t) * liftPerCard * 2f + lift);
                 float rot = -t * rotStep * 2f * (sel ? 0.25f : 1f); // selected card straightens
-                float scale = sel ? selectedScale : hov ? hoverScale : 1f;
+                float scale = sel ? selectedScale : hov ? hoverScale : elig ? eligibleScale : 1f;
 
                 bool jump = !animate ||
                             (rt.anchoredPosition - pos).sqrMagnitude < 1.5f &&
