@@ -66,7 +66,9 @@ namespace TcgBattle.UI
         private TMP_Text botActiveLabel, playerActiveLabel;
         private HandController hand;
         private BotHandFan botHandFan;
-        private RectTransform botDeckStack;
+        private RectTransform botDeckStack, playerDeckStack;
+        private DeckPileView botDeckPile, playerDeckPile;
+        private RectTransform playerDrawFxLayer;
         private CardInspectPreview handInspect;
         private CardView _inspectSourceView;   // opponent board view feeding the inspect preview
         private TMP_Text botInfoText, playerDeckText;
@@ -80,6 +82,13 @@ namespace TcgBattle.UI
         private TMP_Text turnPillText;
         private Button mundurBtn, serangBtn, endBtn;
         private TMP_Text mundurLabel, serangLabel;
+        private RectTransform transformActionRoot;
+        private Button transformBtn;
+        private GameObject transformOverlay;
+        private CanvasGroup transformGroup;
+        private CardView[] transformChoiceViews;
+        private TMP_Text transformErrorText;
+        private Coroutine transformFade;
         private GameObject coinOverlay;
         private Image coinImage, coinRing;
         private Image coinGlow, coinGlow2;
@@ -95,7 +104,8 @@ namespace TcgBattle.UI
         private CardInstance _pendingPromoPlayer, _pendingPromoBot;
         private CardInstance _pendingBenchPlayer, _pendingBenchBot;
         private CardInstance _pendingRetreatPlayer, _pendingRetreatBot;
-        private bool _pendingPlayerDraw;
+        private readonly List<CardInstance> _pendingPlayerDraws = new List<CardInstance>();
+        private readonly HashSet<CardInstance> _pendingPlayerDrawSet = new HashSet<CardInstance>();
 
         private Coroutine turnBannerRoutine;
         private BattleManager _boundManager;
@@ -118,10 +128,10 @@ namespace TcgBattle.UI
             _boundManager = battle;
 
             // queued animations from a previous match must not leak into the new one
+            FinishDrawAnimations();
             _pendingPromoPlayer = _pendingPromoBot = null;
             _pendingBenchPlayer = _pendingBenchBot = null;
             _pendingRetreatPlayer = _pendingRetreatBot = null;
-            _pendingPlayerDraw = false;
             statusBaseline = "";
             if (botHandFan != null)
                 botHandFan.ResetVisuals();
@@ -129,6 +139,7 @@ namespace TcgBattle.UI
             if (canvasRt == null)
                 BuildAll();
 
+            CloseTransformOverlayImmediate();
             Subscribe(mgr);
             RefreshAll();
         }
@@ -147,6 +158,7 @@ namespace TcgBattle.UI
             m.OnRetreated += HandleRetreat;
             m.OnScoreChanged += HandleScore;
             m.OnDrawn += HandleDraw;
+            m.OnTransformed += HandleTransformed;
             m.OnSupportDestroyed += HandleSupportDestroyed;
             m.OnGameOver += ShowGameOver;
         }
@@ -165,6 +177,7 @@ namespace TcgBattle.UI
             m.OnRetreated -= HandleRetreat;
             m.OnScoreChanged -= HandleScore;
             m.OnDrawn -= HandleDraw;
+            m.OnTransformed -= HandleTransformed;
             m.OnSupportDestroyed -= HandleSupportDestroyed;
             m.OnGameOver -= ShowGameOver;
         }
@@ -176,6 +189,8 @@ namespace TcgBattle.UI
             Unsubscribe(m);
             if (_boundManager == m)
                 _boundManager = null;
+            FinishDrawAnimations();
+            CloseTransformOverlayImmediate();
             if (turnBannerRoutine != null)
             {
                 StopCoroutine(turnBannerRoutine);
@@ -193,6 +208,12 @@ namespace TcgBattle.UI
         {
             if (_boundManager != null)
                 Unsubscribe(_boundManager);
+            FinishDrawAnimations();
+            if (transformFade != null)
+            {
+                StopCoroutine(transformFade);
+                transformFade = null;
+            }
         }
 
         // ================================================================== build
@@ -214,12 +235,16 @@ namespace TcgBattle.UI
             BuildSlots();
             BuildBotHeader();
             BuildPlayerHeader();
+            BuildDeckPiles();
             BuildStaminaBadge();
             BuildScorePips();
             BuildActionRow();
+            BuildTransformAction();
             BuildBotHandFan();
             BuildHand();
+            BuildDrawFxLayer();
             BuildOverlays();
+            BuildTransformOverlay();
             BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
 
             // capture the static layout once so it can be rescaled when the canvas size
@@ -231,6 +256,8 @@ namespace TcgBattle.UI
         {
             if (safeRoot == null)
                 return;
+            if (transformOverlay != null && transformOverlay.activeSelf && Input.GetKeyDown(KeyCode.Escape))
+                CloseTransformOverlay();
             float h = safeRoot.rect.height;
             if (h <= 0f)
                 return;
@@ -278,6 +305,10 @@ namespace TcgBattle.UI
             foreach (var v in playerBenchViews)
                 if (v != null)
                     v.ApplyScale(k);
+            if (transformChoiceViews != null)
+                foreach (var v in transformChoiceViews)
+                    if (v != null)
+                        v.ApplyScale(k);
 
             RefreshAll();
         }
@@ -561,8 +592,53 @@ namespace TcgBattle.UI
         }
 
         /// <summary>
+        /// Contextual Pak Karta action. It only appears while the transformation is
+        /// legal, in the empty space to the right of the player's bench row, so the
+        /// normal 1920x1080 action row and board layout stay untouched.
+        /// </summary>
+        private void BuildTransformAction()
+        {
+            transformActionRoot = Node("TransformAction", 420f, BandActivePlayer, new Vector2(200f, 80f));
+            transformBtn = MakeButton("TransformBtn", "TRANSFORMASI", 19f, ColGoldBright, Hex(0x3A2506),
+                0f, 0.5f, new Vector2(190f, 54f), transformActionRoot);
+            transformBtn.onClick.AddListener(OpenTransformOverlay);
+
+            transformActionRoot.gameObject.SetActive(false);
+        }
+
+        /// <summary>
+        /// Visible deck piles for both sides. The bot's pile stays in the upper-right
+        /// free space; the player's pile sits left of the active row, close to the hand
+        /// so every draw has a readable origin. Each pile carries its own live count.
+        /// </summary>
+        private void BuildDeckPiles()
+        {
+            var botGo = new GameObject("BotDeckStack", typeof(RectTransform));
+            var botRt = (RectTransform)botGo.transform;
+            botRt.SetParent(safeRoot, false);
+            botRt.anchorMin = botRt.anchorMax = new Vector2(1f, 0.9500f);
+            botRt.pivot = new Vector2(0.5f, 0.5f);
+            botRt.sizeDelta = new Vector2(74f, 100f);
+            botRt.anchoredPosition = new Vector2(-130f, 0f);
+            botDeckStack = botRt;
+            botDeckPile = botGo.AddComponent<DeckPileView>();
+            botDeckPile.Build();
+
+            var playerGo = new GameObject("PlayerDeckStack", typeof(RectTransform));
+            var playerRt = (RectTransform)playerGo.transform;
+            playerRt.SetParent(safeRoot, false);
+            playerRt.anchorMin = playerRt.anchorMax = new Vector2(0f, 0.3500f);
+            playerRt.pivot = new Vector2(0.5f, 0.5f);
+            playerRt.sizeDelta = new Vector2(74f, 100f);
+            playerRt.anchoredPosition = new Vector2(100f, 0f);
+            playerDeckStack = playerRt;
+            playerDeckPile = playerGo.AddComponent<DeckPileView>();
+            playerDeckPile.Build();
+        }
+
+        /// <summary>
         /// Opponent hand representation: generic face-down backs only. The fan sits in
-        /// the top-right free space, clear of the bot's active/bench cards, deck count,
+        /// the top-right free space, clear of the bot's active/bench cards, deck pile,
         /// secondary stamina badge and the central action bar.
         /// </summary>
         private void BuildBotHandFan()
@@ -575,24 +651,30 @@ namespace TcgBattle.UI
             fanRt.sizeDelta = new Vector2(440f, 200f);
             fanRt.anchoredPosition = new Vector2(-410f, 0f);
 
-            var deckGo = new GameObject("BotDeckStack", typeof(RectTransform));
-            var deckRt = (RectTransform)deckGo.transform;
-            deckRt.SetParent(safeRoot, false);
-            deckRt.anchorMin = deckRt.anchorMax = new Vector2(1f, 0.9630f);
-            deckRt.pivot = new Vector2(0.5f, 0.5f);
-            deckRt.sizeDelta = new Vector2(74f, 100f);
-            deckRt.anchoredPosition = new Vector2(-130f, 0f);
-            botDeckStack = deckRt;
-
             botHandFan = fanGo.AddComponent<BotHandFan>();
-            botHandFan.Initialize(fanRt, deckRt, card =>
+            botHandFan.Initialize(fanRt, botDeckStack, card =>
             {
                 var view = FindBoardView(card);
                 if (view != null)
                     return view.Root;
                 return statusPill != null ? statusPill.rectTransform : null;
             });
-            botHandFan.BuildDeckStack(deckRt);
+        }
+
+        /// <summary>
+        /// Transparent layer above the hand for player draw ghosts. It never intercepts
+        /// input and can be cleared wholesale on restart or game over.
+        /// </summary>
+        private void BuildDrawFxLayer()
+        {
+            var go = new GameObject("PlayerDrawFx", typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            StretchFull(rt, 0f);
+            var group = go.AddComponent<CanvasGroup>();
+            group.interactable = false;
+            group.blocksRaycasts = false;
+            playerDrawFxLayer = rt;
         }
 
         private void BuildHand()
@@ -705,6 +787,221 @@ namespace TcgBattle.UI
             overOverlay.SetActive(false);
         }
 
+        /// <summary>
+        /// Chess-promotion-style choice modal for Pak Karta. Two large card choices
+        /// (the existing BN/SB artwork and live card data) sit above a dimmed board;
+        /// hovering a choice drives the same passive inspect preview as the hand.
+        /// Clicking a card confirms; BATAL, Escape, or a backdrop click cancels.
+        /// </summary>
+        private void BuildTransformOverlay()
+        {
+            var go = new GameObject("TransformOverlay", typeof(RectTransform), typeof(Image), typeof(CanvasGroup));
+            transformOverlay = go;
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            StretchFull(rt);
+
+            var dim = go.GetComponent<Image>();
+            dim.color = new Color(0.04f, 0.02f, 0.08f, 0.76f);
+            dim.raycastTarget = true;
+            var backdrop = go.AddComponent<Button>();
+            backdrop.targetGraphic = dim;
+            backdrop.transition = Selectable.Transition.None;
+            backdrop.onClick.AddListener(CloseTransformOverlay);
+
+            transformGroup = go.GetComponent<CanvasGroup>();
+            transformGroup.alpha = 0f;
+            transformGroup.interactable = false;
+            transformGroup.blocksRaycasts = false;
+
+            var panel = MakeChildImage(rt, "TransformPanel", UiSpriteFactory.Rounded,
+                new Color(0.11f, 0.08f, 0.19f, 1f), Vector2.zero, new Vector2(840f, 650f));
+            panel.type = Image.Type.Sliced;
+            var panelRing = MakeChildImage(panel.rectTransform, "TransformPanelRing",
+                UiSpriteFactory.RoundOutline, new Color(0.85f, 0.66f, 0.26f, 0.45f),
+                Vector2.zero, new Vector2(826f, 636f));
+            panelRing.type = Image.Type.Sliced;
+
+            var title = MakeText("TransformTitle", panel.rectTransform, 30, ColIvory,
+                TextAlignmentOptions.Center, bold: true);
+            PlaceCenter(title.rectTransform, new Vector2(0f, 270f), new Vector2(760f, 44f));
+            title.text = "TRANSFORMASI PAK KARTA";
+            title.characterSpacing = 1.4f;
+
+            var subtitle = MakeText("TransformSubtitle", panel.rectTransform, 17, ColIvoryDim,
+                TextAlignmentOptions.Center);
+            PlaceCenter(subtitle.rectTransform, new Vector2(0f, 232f), new Vector2(760f, 28f));
+            subtitle.text = "Pilih wujud baru";
+
+            var bn = CreateTransformChoice(panel.rectTransform, "BN", -150f, "TransformChoiceBN");
+            var sb = CreateTransformChoice(panel.rectTransform, "SB", 150f, "TransformChoiceSB");
+            transformChoiceViews = new[] { bn, sb };
+
+            var bnLabel = MakeText("TransformBnLabel", panel.rectTransform, 19, ColGoldBright,
+                TextAlignmentOptions.Center, bold: true);
+            PlaceCenter(bnLabel.rectTransform, new Vector2(-150f, -170f), new Vector2(240f, 30f));
+            bnLabel.text = "BABI NGEPET";
+            bnLabel.characterSpacing = 1f;
+
+            var sbLabel = MakeText("TransformSbLabel", panel.rectTransform, 19, ColGoldBright,
+                TextAlignmentOptions.Center, bold: true);
+            PlaceCenter(sbLabel.rectTransform, new Vector2(150f, -170f), new Vector2(240f, 30f));
+            sbLabel.text = "SILUMAN BABI";
+            sbLabel.characterSpacing = 1f;
+
+            transformErrorText = MakeText("TransformError", panel.rectTransform, 16, ColRed,
+                TextAlignmentOptions.Center);
+            PlaceCenter(transformErrorText.rectTransform, new Vector2(0f, -214f), new Vector2(740f, 28f));
+            transformErrorText.text = "";
+
+            var cancel = MakeButton("TransformCancelBtn", "BATAL", 20f, ColIvory, ColInk,
+                0f, 0.10f, new Vector2(220f, 54f), panel.rectTransform);
+            cancel.onClick.AddListener(CloseTransformOverlay);
+
+            transformOverlay.SetActive(false);
+        }
+
+        private CardView CreateTransformChoice(RectTransform parent, string cardId, float x, string name)
+        {
+            if (battle == null || battle.Database == null)
+                return null;
+            var def = battle.Database.GetBattleCard(cardId);
+            if (def == null)
+                return null;
+
+            var card = CardInstance.CreateBattle(def);
+            var view = CardView.Create(parent, new Vector2(240f, 330f), name);
+            view.Bind(card, CardDisplayMode.Active);
+            PlaceCenter(view.Root, new Vector2(x, 30f), new Vector2(240f, 330f));
+            view.Clicked += _ => ConfirmTransform(cardId);
+            view.Hovered += OnTransformChoiceHovered;
+            return view;
+        }
+
+        private void OnTransformChoiceHovered(CardView view, bool entered)
+        {
+            if (handInspect == null || view == null || view.Card == null)
+                return;
+            if (entered)
+                handInspect.Show(view.Card, view.Root);
+            else
+                handInspect.HideIfCard(view.Card);
+        }
+
+        private void OpenTransformOverlay()
+        {
+            if (battle == null || transformOverlay == null)
+                return;
+            if (!battle.CanTransformPakKarta(out var error))
+            {
+                if (!string.IsNullOrEmpty(error))
+                    battle.PostLocalStatus(error);
+                return;
+            }
+            if (transformOverlay.activeSelf)
+                return;
+
+            if (transformFade != null)
+            {
+                StopCoroutine(transformFade);
+                transformFade = null;
+            }
+            if (handInspect != null)
+            {
+                handInspect.Hide();
+                _inspectSourceView = null;
+            }
+            if (transformErrorText != null)
+                transformErrorText.text = "";
+
+            transformOverlay.SetActive(true);
+            if (transformActionRoot != null)
+                transformActionRoot.gameObject.SetActive(false);
+            transformGroup.alpha = 0f;
+            transformGroup.interactable = true;
+            transformGroup.blocksRaycasts = true;
+            transformFade = StartCoroutine(FadeTransformOverlay(0f, 1f, 0.14f, false));
+        }
+
+        private void CloseTransformOverlay()
+        {
+            if (transformOverlay == null || !transformOverlay.activeSelf)
+                return;
+            if (transformFade != null)
+            {
+                StopCoroutine(transformFade);
+                transformFade = null;
+            }
+            if (handInspect != null)
+                handInspect.Hide();
+            transformGroup.interactable = false;
+            transformGroup.blocksRaycasts = false;
+            transformFade = StartCoroutine(FadeTransformOverlay(transformGroup.alpha, 0f, 0.10f, true));
+        }
+
+        private void CloseTransformOverlayImmediate()
+        {
+            if (transformFade != null)
+            {
+                StopCoroutine(transformFade);
+                transformFade = null;
+            }
+            if (handInspect != null)
+                handInspect.Hide();
+            if (transformOverlay == null)
+                return;
+            transformGroup.alpha = 0f;
+            transformGroup.interactable = false;
+            transformGroup.blocksRaycasts = false;
+            transformOverlay.SetActive(false);
+            RefreshTransformActionVisibility();
+        }
+
+        private void RefreshTransformActionVisibility()
+        {
+            if (transformActionRoot == null)
+                return;
+            bool canTransform = battle != null && battle.Phase == Phase.PlayerTurn &&
+                                battle.CanTransformPakKarta(out _);
+            bool overlayOpen = transformOverlay != null && transformOverlay.activeSelf;
+            transformActionRoot.gameObject.SetActive(canTransform && !overlayOpen);
+        }
+
+        private IEnumerator FadeTransformOverlay(float from, float to, float duration, bool deactivateAtEnd)
+        {
+            float t = 0f;
+            while (t < duration)
+            {
+                if (transformGroup == null)
+                    yield break;
+                t += Time.unscaledDeltaTime;
+                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / duration));
+                transformGroup.alpha = Mathf.Lerp(from, to, k);
+                yield return null;
+            }
+            if (transformGroup != null)
+                transformGroup.alpha = to;
+            if (deactivateAtEnd && transformOverlay != null)
+            {
+                transformOverlay.SetActive(false);
+                RefreshTransformActionVisibility();
+            }
+            transformFade = null;
+        }
+
+        private void ConfirmTransform(string formId)
+        {
+            if (battle == null)
+                return;
+            if (!battle.TransformPakKarta(formId))
+            {
+                if (transformErrorText != null)
+                    transformErrorText.text = battle.StatusMessage;
+                return;
+            }
+            CloseTransformOverlay();
+        }
+
         // ================================================================== refresh
 
         private void RefreshAll()
@@ -729,15 +1026,15 @@ namespace TcgBattle.UI
             playerActiveLabel.text = pickHint ? "PILIH KARTU\nAKTIFMU" : "Kosong";
             BindBenchRow(playerBenchViews, playerBenchFrames, playerBenchLabels, battle.Player.Bench, "Kosong");
 
-            // inspection preview: if the opponent card it shows just left the board
-            // (KO, promotion, retreat), drop the stale preview.
-            if (handInspect != null && handInspect.CurrentCard != null && _inspectSourceView != null &&
-                handInspect.CurrentCard != battle.Bot.Active &&
-                !battle.Bot.Bench.Contains(handInspect.CurrentCard))
-            {
-                _inspectSourceView = null;
-                handInspect.Hide();
-            }
+            // inspection preview: keep a board-sourced panel in sync with live HP/art,
+            // and drop it when the shown card leaves play (KO, promotion, retreat).
+            RefreshBoardInspectPreview();
+
+            // ---- Pak Karta transformation action ----
+            bool canTransform = myTurn && battle.CanTransformPakKarta(out _);
+            RefreshTransformActionVisibility();
+            if (playerActiveView != null)
+                playerActiveView.SetEligible(canTransform);
 
             // ---- hand ----
             hand.Sync(battle.Player.Hand);
@@ -747,18 +1044,19 @@ namespace TcgBattle.UI
                     v.SetEligible(v.Card != null && battle.CanSelectStartingActive(v.Card));
                 hand.Layout(); // lift eligible starting cards
             }
-            if (_pendingPlayerDraw && hand.Views.Count > 0)
-            {
-                _pendingPlayerDraw = false;
-                // wait out the fan tween so the punch doesn't fight the layout scale
-                StartCoroutine(PunchAfter(hand.Views[hand.Views.Count - 1].Root, 0.2f, 1.2f, 0.35f));
-            }
+
+            // ---- visible deck piles: counts update before any draw ghost starts ----
+            if (botDeckPile != null)
+                botDeckPile.SetCount(battle.Bot.Deck.Count);
+            if (playerDeckPile != null)
+                playerDeckPile.SetCount(battle.Player.Deck.Count);
 
             // ---- opponent hidden hand: backs only, never faces or a hand count ----
             if (botHandFan != null)
                 botHandFan.Sync(battle.Bot.Hand);
-            if (botDeckStack != null)
-                botDeckStack.gameObject.SetActive(battle.Bot.Deck.Count > 0);
+
+            // ---- player draw ghosts, after the hand has its new layout target ----
+            StartPendingPlayerDraws();
 
             // ---- header counters / stamina rail ----
             RefreshEnergyTexts();
@@ -855,6 +1153,50 @@ namespace TcgBattle.UI
                 AnimateSlotIn(FindBoardView(_pendingRetreatBot), new Vector2(250f, 22f) * _k);
                 _pendingRetreatBot = null;
             }
+        }
+
+        /// <summary>
+        /// Board-sourced inspect previews (opponent active/bench) are refreshed in place
+        /// so damage, healing, and evolution always show the live card values. Hand and
+        /// transformation-choice previews are owned by their own hover handlers.
+        /// </summary>
+        private void RefreshBoardInspectPreview()
+        {
+            if (handInspect == null || handInspect.CurrentCard == null || _inspectSourceView == null)
+                return;
+            if (!IsBotBoardView(_inspectSourceView))
+                return;
+
+            var card = handInspect.CurrentCard;
+            if (card.FaceDown ||
+                (card != battle.Bot.Active && !battle.Bot.Bench.Contains(card)))
+            {
+                _inspectSourceView = null;
+                handInspect.Hide();
+                return;
+            }
+
+            if (!ReferenceEquals(_inspectSourceView.Card, card))
+            {
+                _inspectSourceView = null;
+                handInspect.Hide();
+                return;
+            }
+
+            handInspect.Show(card, _inspectSourceView.Root);
+        }
+
+        private bool IsBotBoardView(CardView view)
+        {
+            if (view == null)
+                return false;
+            if (view == botActiveView)
+                return true;
+            if (botBenchViews != null)
+                foreach (var benchView in botBenchViews)
+                    if (benchView == view)
+                        return true;
+            return false;
         }
 
         private void BindSlot(CardView view, CardInstance card, CardDisplayMode mode, bool botInspect = false)
@@ -1192,6 +1534,15 @@ namespace TcgBattle.UI
                 _pendingPromoBot = card;
         }
 
+        private void HandleTransformed(CardInstance card, Side side)
+        {
+            var view = side == Side.Player ? playerActiveView : botActiveView;
+            if (view == null || !ReferenceEquals(view.Card, card))
+                return;
+            SpawnRing(view.Root, ColGoldBright, 36f, 0.34f);
+            StartCoroutine(UiFx.Punch(view.Root, 1.06f, 0.22f));
+        }
+
         private void HandleBenchPlay(CardInstance card, Side side)
         {
             if (side == Side.Player)
@@ -1218,8 +1569,85 @@ namespace TcgBattle.UI
 
         private void HandleDraw(CardInstance card, Side side)
         {
-            if (side == Side.Player)
-                _pendingPlayerDraw = true;
+            if (side != Side.Player || card == null)
+                return;
+            if (_pendingPlayerDrawSet.Add(card))
+                _pendingPlayerDraws.Add(card);
+        }
+
+        /// <summary>
+        /// Start the face-down travel from the player's visible deck to each new hand
+        /// view. The view is hidden until the ghost arrives, so identity is never shown
+        /// before the card reaches the hand. Multiple rapid draws are handled together.
+        /// </summary>
+        private void StartPendingPlayerDraws()
+        {
+            if (_pendingPlayerDraws.Count == 0)
+                return;
+
+            if (battle == null || hand == null || playerDrawFxLayer == null || playerDeckStack == null)
+            {
+                _pendingPlayerDraws.Clear();
+                _pendingPlayerDrawSet.Clear();
+                return;
+            }
+
+            var cards = new List<CardInstance>(_pendingPlayerDraws);
+            _pendingPlayerDraws.Clear();
+            _pendingPlayerDrawSet.Clear();
+
+            int order = 0;
+            foreach (var card in cards)
+            {
+                if (card == null || !battle.Player.Hand.Contains(card))
+                    continue;
+                var view = hand.FindView(card);
+                if (view == null)
+                    continue;
+
+                var group = view.Root.GetComponent<CanvasGroup>();
+                if (group == null)
+                    group = view.Root.gameObject.AddComponent<CanvasGroup>();
+                group.alpha = 0f;
+                group.interactable = false;
+                group.blocksRaycasts = false;
+
+                var cardSize = new Vector2(hand.cardWidth, hand.cardHeight);
+                float delay = Mathf.Min(order * 0.035f, 0.14f);
+                var fx = CardDrawFx.Play(playerDrawFxLayer, playerDeckStack, view.Root,
+                    cardSize, 0.32f, delay, () =>
+                    {
+                        if (view != null)
+                            StartCoroutine(UiFx.Punch(view.Root, 1.05f, 0.18f));
+                    });
+                if (fx == null)
+                {
+                    group.alpha = 1f;
+                    group.interactable = true;
+                    group.blocksRaycasts = true;
+                }
+                order++;
+            }
+        }
+
+        /// <summary>
+        /// Snap or drop every in-flight draw. Cancelling the ghosts restores their hand
+        /// slots via CardDrawFx.OnDestroy, so restart/game over can never strand an
+        /// invisible card or leave an animation object behind.
+        /// </summary>
+        private void FinishDrawAnimations()
+        {
+            if (botHandFan != null)
+                botHandFan.FinishDrawAnimations();
+            if (playerDrawFxLayer != null)
+            {
+                var fxs = playerDrawFxLayer.GetComponentsInChildren<CardDrawFx>(true);
+                for (int i = fxs.Length - 1; i >= 0; i--)
+                    if (fxs[i] != null)
+                        fxs[i].Cancel();
+            }
+            _pendingPlayerDraws.Clear();
+            _pendingPlayerDrawSet.Clear();
         }
 
         /// <summary>Kucing Liar sniping a bench Mbok Sumi: one-shot destruction feedback.</summary>
@@ -1443,6 +1871,10 @@ namespace TcgBattle.UI
         {
             if (overOverlay == null)
                 return;
+            // Never leave a face-down ghost, transformation modal, or invisible hand
+            // card behind the result.
+            CloseTransformOverlayImmediate();
+            FinishDrawAnimations();
             if (turnBannerRoutine != null)
             {
                 StopCoroutine(turnBannerRoutine);

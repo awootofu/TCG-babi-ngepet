@@ -38,6 +38,7 @@ namespace TcgBattle.Gameplay
         public event Action<CardInstance, Side> OnDrawn;
         public event Action<Side> OnEnergyChanged;
         public event Action<CardInstance, Side> OnSupportUsed;  // one-shot support consumed
+        public event Action<CardInstance, Side> OnTransformed;  // Pak Karta -> BN / SB
         public event Action<CardInstance, Side> OnSupportDestroyed; // Kucing Liar killing bench MS
         public event Action<bool> OnCoinFlipped;                // playerStartsFirst
         public event Action<Side> OnGameOver;                   // winner
@@ -331,8 +332,9 @@ namespace TcgBattle.Gameplay
 
         /// <summary>
         /// Evolve the active card using the matching card from hand. The hand card
-        /// becomes the active instance; the old active leaves play. No extra energy
-        /// is charged (the requirement sheet only assigns energy to attacks/retreats).
+        /// becomes the active instance; the old active leaves play. Damage already
+        /// taken carries over against the evolved card's printed maximum. No extra
+        /// energy is charged (the requirement sheet only assigns energy to attacks/retreats).
         /// </summary>
         public bool Evolve(CardInstance card)
         {
@@ -348,12 +350,103 @@ namespace TcgBattle.Gameplay
         private bool EvolveInternal(PlayerState p, CardInstance card)
         {
             var oldActive = p.Active;
+            int carriedHp = BattleRules.EvolutionHpAfterDamage(
+                oldActive.MaxHp, oldActive.CurrentHp, card.MaxHp);
+
+            // The current Warga line always grows in max HP, so this guard is
+            // unreachable with the shipped cards. It keeps future/edited data safe:
+            // never leave an active card at 0 HP without running the KO path.
+            if (carriedHp <= 0)
+            {
+                SetStatus($"{card.DisplayName} tidak bisa berevolusi: HP hasil evolusi habis.");
+                return false;
+            }
+
             p.Hand.Remove(card);
+            card.CurrentHp = carriedHp;
             p.Active = card;
             OnPromoted?.Invoke(card, p.Side);
             SetStatus(p.Side == Side.Player
-                ? $"{oldActive.DisplayName} berevolusi menjadi {card.DisplayName}!"
-                : $"Bot berevolusi: {oldActive.DisplayName} menjadi {card.DisplayName}!");
+                ? $"{oldActive.DisplayName} berevolusi menjadi {card.DisplayName}! ({card.CurrentHp}/{card.MaxHp} HP)"
+                : $"Bot berevolusi: {oldActive.DisplayName} menjadi {card.DisplayName}! ({card.CurrentHp}/{card.MaxHp} HP)");
+            OnStateChanged?.Invoke();
+            return true;
+        }
+
+        /// <summary>
+        /// Pak Karta may transform for free while he is the player's active card and
+        /// Mbok Sumi is on the player's bench. The transformation does not consume
+        /// Mbok Sumi, energy, the turn, or the once-per-turn attack.
+        /// </summary>
+        public bool CanTransformPakKarta(out string error)
+        {
+            error = null;
+            if (Phase != Phase.PlayerTurn)
+            {
+                error = "Bukan giliranmu.";
+                return false;
+            }
+            if (Player.Active == null)
+            {
+                error = "Tidak ada kartu aktif.";
+                return false;
+            }
+            if (Player.Active.CardId != BattleRules.PakKartaId)
+            {
+                error = "Hanya Pak Karta yang bisa bertransformasi.";
+                return false;
+            }
+            if (Player.Active.IsKnockedOut)
+            {
+                error = "Kartu aktif sudah pingsan.";
+                return false;
+            }
+            if (!BenchContainsMbokSumi(Player))
+            {
+                error = "Mbok Sumi harus ada di bangku untuk bertransformasi.";
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Replace the active Pak Karta instance in place with Babi Ngepet or
+        /// Siluman Babi. The same CardInstance stays in the active slot, so every
+        /// existing reference (UI, score, board) agrees on the transformed card.
+        /// Transformation starts the new form at its printed max HP; the assignment
+        /// only defines damage carry-over for Warga evolution.
+        /// </summary>
+        public bool TransformPakKarta(string formId)
+        {
+            if (!CanTransformPakKarta(out var error))
+            {
+                if (error != null)
+                    SetStatus(error);
+                return false;
+            }
+            if (!BattleRules.IsPakKartaTransformForm(formId))
+            {
+                SetStatus("Pilih Babi Ngepet atau Siluman Babi.");
+                return false;
+            }
+
+            var def = Database.GetBattleCard(formId);
+            if (def == null)
+            {
+                SetStatus("Data wujud transformasi tidak ditemukan.");
+                return false;
+            }
+
+            var active = Player.Active;
+            string oldName = active.DisplayName;
+            active.CardId = def.id;
+            active.Battle = def;
+            active.Support = null;
+            active.CurrentHp = def.maxHp;
+            active.FaceDown = false;
+
+            SetStatus($"{oldName} berubah menjadi {def.displayName}!");
+            OnTransformed?.Invoke(active, Side.Player);
             OnStateChanged?.Invoke();
             return true;
         }
