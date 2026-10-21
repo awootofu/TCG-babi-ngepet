@@ -1290,7 +1290,7 @@ namespace TcgBattle.UI
                 {
                     if (card.IsSupport && card.CardId == "TA")
                     {
-                        ShakeView(view, "Tumbal Anak tetap di tangan untuk melindungi Babi Ngepet.");
+                        ShakeView(view, "Tumbal Anak di tangan akan dikorbankan untuk menangkal serangan api pada Babi Ngepet.");
                         return;
                     }
                     if (!battle.PlayCardFromHand(card))

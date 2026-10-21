@@ -10,7 +10,7 @@ namespace TcgBattle.Gameplay
     /// validates every action, and never touches GameObjects.
     /// Support card effects (transcribed from the card artwork):
     ///   - Mbok Sumi  (bench) : while she sits on your bench, your retreats are free.
-    ///   - Tumbal Anak(hand) : Babi Ngepet takes no damage from Fire attacks while in hand.
+    ///   - Tumbal Anak(hand) : one copy is consumed to nullify a Fire attack on your Babi Ngepet.
     ///   - Kucing Liar(skillo) : when played, deals 40 damage to the opponent's bench Mbok Sumi.
     ///   - Punarma    (skillo) : when played (only if opposing active is Babi Ngepet),
     ///                           your next attack this turn deals +50 damage.
@@ -37,7 +37,7 @@ namespace TcgBattle.Gameplay
         public event Action<Side, int> OnScoreChanged;          // side, new points
         public event Action<CardInstance, Side> OnDrawn;
         public event Action<Side> OnEnergyChanged;
-        public event Action<CardInstance, Side> OnSupportUsed;  // one-shot support consumed
+        public event Action<CardInstance, Side> OnSupportUsed;  // support consumed (one-shot or Tumbal Anak shield)
         public event Action<CardInstance, Side> OnTransformed;  // Pak Karta -> BN / SB
         public event Action<CardInstance, Side> OnSupportDestroyed; // Kucing Liar killing bench MS
         public event Action<bool> OnCoinFlipped;                // playerStartsFirst
@@ -268,6 +268,11 @@ namespace TcgBattle.Gameplay
                 // handled by CanUseSupport
                 return CanUseOneShotSupport(card, out error);
             }
+            if (card.IsSupport && card.Support.effect == Data.SupportEffect.TumbalAnakHandPassive)
+            {
+                error = "Tumbal Anak tetap di tangan dan dikorbankan saat melindungi Babi Ngepet.";
+                return false;
+            }
             if (BattleRules.IsEvolutionOnly(card))
             {
                 // Advanced Warga cards never go to the bench; they only replace
@@ -452,9 +457,10 @@ namespace TcgBattle.Gameplay
         }
 
         /// <summary>
-        /// Playing a card from hand: battle cards and bench-passive supports (Mbok Sumi,
-        /// Tumbal Anak) go to the bench; one-shot supports take effect and leave play.
-        /// Pasukan Obor / Amukan Warga instead evolve the matching active card.
+        /// Playing a card from hand: battle cards and Mbok Sumi go to the bench;
+        /// Tumbal Anak stays in hand as a shield and is consumed when it protects
+        /// Babi Ngepet; one-shot supports take effect and leave play. Pasukan Obor /
+        /// Amukan Warga instead evolve the matching active card.
         /// </summary>
         public bool PlayCardFromHand(CardInstance card)
         {
@@ -476,6 +482,12 @@ namespace TcgBattle.Gameplay
                 OnSupportUsed?.Invoke(card, Side.Player);
                 OnStateChanged?.Invoke();
                 return true;
+            }
+
+            if (card.IsSupport && card.Support.effect == Data.SupportEffect.TumbalAnakHandPassive)
+            {
+                SetStatus("Tumbal Anak tetap di tangan dan dikorbankan saat melindungi Babi Ngepet.");
+                return false;
             }
 
             if (Player.Bench.Count >= BattleRules.BenchLimit)
@@ -731,6 +743,8 @@ namespace TcgBattle.Gameplay
                 return true;
             }
 
+            if (card.IsSupport && card.Support.effect == Data.SupportEffect.TumbalAnakHandPassive)
+                return false;
             if (BattleRules.IsEvolutionOnly(card))
                 return false;
             if (p.Bench.Count >= BattleRules.BenchLimit)
@@ -757,10 +771,17 @@ namespace TcgBattle.Gameplay
             var atkCard = attacker.Active;
             var defCard = defender.Active;
 
-            // Tumbal Anak hand-passive: Babi Ngepet is shielded from Fire attacks.
-            bool shielded = atkCard.Element == Data.Element.Fire
-                && defCard.CardId == "BN"
-                && HandContainsSupport(defender, Data.SupportEffect.TumbalAnakHandPassive);
+            // Tumbal Anak hand-passive: one copy is consumed to shield Babi Ngepet
+            // from a Fire attack. Additional copies remain in hand for later attacks.
+            var shieldCard = atkCard.Element == Data.Element.Fire && defCard.CardId == "BN"
+                ? FindHandSupport(defender, Data.SupportEffect.TumbalAnakHandPassive)
+                : null;
+            bool shielded = shieldCard != null;
+            if (shielded)
+            {
+                defender.Hand.Remove(shieldCard);
+                OnSupportUsed?.Invoke(shieldCard, defender.Side);
+            }
 
             int bonus = attacker.NextAttackBonus;
             attacker.NextAttackBonus = 0;
@@ -771,7 +792,7 @@ namespace TcgBattle.Gameplay
             OnAttack?.Invoke(atkCard, attacker.Side, defCard, damage, effective);
             if (shielded)
             {
-                SetStatus($"Tumbal Anak menangkal serangan {atkCard.DisplayName}!");
+                SetStatus($"{shieldCard.DisplayName} dikorbankan untuk menangkal serangan {atkCard.DisplayName}!");
             }
             else
             {
@@ -918,10 +939,15 @@ namespace TcgBattle.Gameplay
 
         public static bool HandContainsSupport(PlayerState p, Data.SupportEffect effect)
         {
+            return FindHandSupport(p, effect) != null;
+        }
+
+        private static CardInstance FindHandSupport(PlayerState p, Data.SupportEffect effect)
+        {
             foreach (var c in p.Hand)
                 if (c.IsSupport && c.Support.effect == effect)
-                    return true;
-            return false;
+                    return c;
+            return null;
         }
 
         private static bool HasFreeRetreat(PlayerState p)
