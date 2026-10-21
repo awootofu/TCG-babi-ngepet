@@ -56,7 +56,7 @@ namespace TcgBattle.Gameplay
             get
             {
                 foreach (var c in Bench)
-                    if (c.IsBattle)
+                    if (BattleRules.CanEnterActiveDirectly(c))
                         return true;
                 return false;
             }

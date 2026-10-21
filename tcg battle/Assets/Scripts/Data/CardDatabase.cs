@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace TcgBattle.Data
@@ -123,13 +124,11 @@ namespace TcgBattle.Data
         [Header("Player deck: 'Babi Ngepet' series, all Dark (+ support cards)")]
         public DeckEntry[] playerDeck =
         {
-            new DeckEntry { cardId = "BN", copies = 3 },
             new DeckEntry { cardId = "PK", copies = 4 },
-            new DeckEntry { cardId = "SB", copies = 3 },
+            new DeckEntry { cardId = "BN", copies = 4 },
+            new DeckEntry { cardId = "SB", copies = 4 },
             new DeckEntry { cardId = "MS", copies = 2 },
-            new DeckEntry { cardId = "TA", copies = 2 },
-            new DeckEntry { cardId = "KL", copies = 3 },
-            new DeckEntry { cardId = "PJ", copies = 3 },
+            new DeckEntry { cardId = "TA", copies = 6 },
         };
 
         [Header("Bot deck: 'Warga' series, all Fire (+ support cards)")]
@@ -138,10 +137,29 @@ namespace TcgBattle.Data
             new DeckEntry { cardId = "WD", copies = 4 },
             new DeckEntry { cardId = "PO", copies = 4 },
             new DeckEntry { cardId = "AW", copies = 4 },
-            new DeckEntry { cardId = "MS", copies = 2 },
-            new DeckEntry { cardId = "TA", copies = 2 },
+            new DeckEntry { cardId = "PJ", copies = 6 },
             new DeckEntry { cardId = "KL", copies = 2 },
-            new DeckEntry { cardId = "PJ", copies = 2 },
+        };
+
+        // Canonical deck lists from the requirements sheet. BattleManager validates the
+        // serialized lists above against these and falls back to these lists if an asset
+        // was edited or left stale, so a match can never start with an illegal deck.
+        public static readonly DeckEntry[] RequiredPlayerDeck =
+        {
+            new DeckEntry { cardId = "PK", copies = 4 },
+            new DeckEntry { cardId = "BN", copies = 4 },
+            new DeckEntry { cardId = "SB", copies = 4 },
+            new DeckEntry { cardId = "MS", copies = 2 },
+            new DeckEntry { cardId = "TA", copies = 6 },
+        };
+
+        public static readonly DeckEntry[] RequiredBotDeck =
+        {
+            new DeckEntry { cardId = "WD", copies = 4 },
+            new DeckEntry { cardId = "PO", copies = 4 },
+            new DeckEntry { cardId = "AW", copies = 4 },
+            new DeckEntry { cardId = "PJ", copies = 6 },
+            new DeckEntry { cardId = "KL", copies = 2 },
         };
 
         [TextArea(3, 8)] public string rulesText =
@@ -172,8 +190,60 @@ namespace TcgBattle.Data
             int total = 0;
             if (entries != null)
                 foreach (var e in entries)
-                    total += e.copies;
+                    if (e != null)
+                        total += e.copies;
             return total;
+        }
+
+        /// <summary>Returns a fresh copy of the requirements' 20-card list for one side.</summary>
+        public static DeckEntry[] CreateRequiredDeck(bool playerSide)
+        {
+            var source = playerSide ? RequiredPlayerDeck : RequiredBotDeck;
+            var copy = new DeckEntry[source.Length];
+            for (int i = 0; i < source.Length; i++)
+                copy[i] = new DeckEntry { cardId = source[i].cardId, copies = source[i].copies };
+            return copy;
+        }
+
+        /// <summary>
+        /// Validates an exact 20-card list against the requirements: total size, exact
+        /// per-card copies, no duplicate entries, and no cards from the opposing roster.
+        /// Returns null when valid, otherwise a human-readable error.
+        /// </summary>
+        public static string ValidateDeck(DeckEntry[] entries, bool playerSide)
+        {
+            if (entries == null)
+                return "Deck list is null.";
+            if (CountDeckCopies(entries) != DeckSize)
+                return $"Deck has {CountDeckCopies(entries)} cards; expected {DeckSize}.";
+
+            var expected = playerSide ? RequiredPlayerDeck : RequiredBotDeck;
+            var counts = new Dictionary<string, int>();
+            foreach (var entry in entries)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.cardId))
+                    return "Deck contains an entry with no card id.";
+                if (counts.ContainsKey(entry.cardId))
+                    return $"Deck contains duplicate entries for '{entry.cardId}'.";
+                counts[entry.cardId] = entry.copies;
+            }
+
+            foreach (var required in expected)
+            {
+                if (!counts.TryGetValue(required.cardId, out int actual) || actual != required.copies)
+                {
+                    counts.TryGetValue(required.cardId, out actual);
+                    return $"Deck has {actual} x '{required.cardId}'; expected {required.copies}.";
+                }
+                counts.Remove(required.cardId);
+            }
+
+            if (counts.Count > 0)
+            {
+                foreach (var unexpected in counts.Keys)
+                    return $"Deck contains card from outside the required roster: '{unexpected}'.";
+            }
+            return null;
         }
     }
 }

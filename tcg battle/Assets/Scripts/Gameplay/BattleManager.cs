@@ -56,9 +56,10 @@ namespace TcgBattle.Gameplay
             SetupPlayer(Player);
             SetupPlayer(Bot);
 
-            // Bot immediately chooses its starting active (first battle card in hand).
+            // Bot immediately chooses its starting active. Evolved cards may not be
+            // placed there directly, so it must pick a legal basic battle card.
             Bot.Active = null;
-            var botActive = FindFirstBattleCardInList(Bot.Hand);
+            var botActive = FindFirstLegalActiveCardInList(Bot.Hand);
             if (botActive != null)
             {
                 Bot.Hand.Remove(botActive);
@@ -75,7 +76,16 @@ namespace TcgBattle.Gameplay
         private void SetupPlayer(PlayerState p)
         {
             p.Reset();
-            var deckList = p.Side == Side.Player ? Database.playerDeck : Database.botDeck;
+            bool playerSide = p.Side == Side.Player;
+            var deckList = playerSide ? Database.playerDeck : Database.botDeck;
+            string deckError = CardDatabase.ValidateDeck(deckList, playerSide);
+            if (deckError != null)
+            {
+                Debug.LogError($"[BattleManager] Invalid {(playerSide ? "player" : "bot")} deck: {deckError} " +
+                               "Using the required 20-card list instead.");
+                deckList = CardDatabase.CreateRequiredDeck(playerSide);
+            }
+
             foreach (var entry in deckList)
             {
                 var battle = Database.GetBattleCard(entry.cardId);
@@ -92,9 +102,10 @@ namespace TcgBattle.Gameplay
             for (int i = 0; i < BattleRules.StartingHandSize && p.Deck.Count > 0; i++)
                 DrawInternal(p);
 
-            // Simple mulligan: guarantee at least one battle card in the opening hand.
+            // Simple mulligan: guarantee at least one card that may legally start in
+            // the active slot (Warga Desa for the fire deck; any battle card for Dark).
             int attempts = 0;
-            while (!HandHasBattleCard(p) && attempts < 10)
+            while (!HandHasLegalStartingCard(p) && attempts < 10)
             {
                 attempts++;
                 var all = new List<CardInstance>(p.Hand);
@@ -104,14 +115,54 @@ namespace TcgBattle.Gameplay
                 for (int i = 0; i < BattleRules.StartingHandSize && p.Deck.Count > 0; i++)
                     DrawInternal(p);
             }
+            EnsureLegalStartingCard(p);
         }
 
-        private static bool HandHasBattleCard(PlayerState p)
+        private static bool HandHasLegalStartingCard(PlayerState p)
         {
             foreach (var c in p.Hand)
-                if (c.IsBattle)
+                if (BattleRules.CanEnterActiveDirectly(c))
                     return true;
             return false;
+        }
+
+        /// <summary>
+        /// Extremely rare fallback after the normal mulligans: swap a non-legal card
+        /// in hand with a legal starter from the deck so setup can never deadlock.
+        /// </summary>
+        private static void EnsureLegalStartingCard(PlayerState p)
+        {
+            if (HandHasLegalStartingCard(p) || p.Hand.Count == 0 || p.Deck.Count == 0)
+                return;
+
+            int deckIndex = -1;
+            for (int i = 0; i < p.Deck.Count; i++)
+            {
+                if (BattleRules.CanEnterActiveDirectly(p.Deck[i]))
+                {
+                    deckIndex = i;
+                    break;
+                }
+            }
+            if (deckIndex < 0)
+                return;
+
+            int handIndex = -1;
+            for (int i = 0; i < p.Hand.Count; i++)
+            {
+                if (!BattleRules.CanEnterActiveDirectly(p.Hand[i]))
+                {
+                    handIndex = i;
+                    break;
+                }
+            }
+            if (handIndex < 0)
+                handIndex = 0;
+
+            var deckCard = p.Deck[deckIndex];
+            var handCard = p.Hand[handIndex];
+            p.Deck[deckIndex] = handCard;
+            p.Hand[handIndex] = deckCard;
         }
 
         /// <summary>UI calls this after the player picked a starting active from hand.</summary>
@@ -134,8 +185,8 @@ namespace TcgBattle.Gameplay
 
         public bool CanSelectStartingActive(CardInstance card)
         {
-            return Phase == Phase.Setup && Player.Active == null && card != null
-                && card.IsBattle && Player.Hand.Contains(card);
+            return Phase == Phase.Setup && Player.Active == null
+                && BattleRules.CanEnterActiveDirectly(card) && Player.Hand.Contains(card);
         }
 
         // ------------------------------------------------------------------ turns
@@ -216,6 +267,14 @@ namespace TcgBattle.Gameplay
                 // handled by CanUseSupport
                 return CanUseOneShotSupport(card, out error);
             }
+            if (BattleRules.IsEvolutionOnly(card))
+            {
+                // Advanced Warga cards never go to the bench; they only replace
+                // their pre-evolution card in the active slot.
+                if (CanEvolve(card, out error))
+                    return true;
+                return false;
+            }
             if (Player.Bench.Count >= BattleRules.BenchLimit)
             {
                 error = "Bangku sudah penuh.";
@@ -224,14 +283,93 @@ namespace TcgBattle.Gameplay
             return true;
         }
 
+        public bool CanEvolve(CardInstance card, out string error)
+        {
+            return CanEvolveForSide(Player, card, out error);
+        }
+
+        private bool CanEvolveForSide(PlayerState p, CardInstance card, out string error)
+        {
+            error = null;
+            if (Phase != GetPhaseForSide(p.Side))
+            {
+                error = "Bukan giliranmu.";
+                return false;
+            }
+            if (card == null || !p.Hand.Contains(card))
+            {
+                error = "Kartu tidak ada di tangan.";
+                return false;
+            }
+            if (!card.IsBattle || !BattleRules.IsEvolutionOnly(card))
+            {
+                error = "Kartu ini bukan kartu evolusi.";
+                return false;
+            }
+            if (p.Active == null)
+            {
+                error = "Tidak ada kartu aktif untuk berevolusi.";
+                return false;
+            }
+            if (p.Active.IsKnockedOut)
+            {
+                error = "Kartu aktif sudah pingsan.";
+                return false;
+            }
+
+            string source = BattleRules.EvolutionSource(card.CardId);
+            if (p.Active.CardId != source)
+            {
+                string sourceName = source == BattleRules.WargaBasicId
+                    ? "Warga Desa"
+                    : "Pasukan Obor";
+                error = $"{card.DisplayName} hanya bisa berevolusi dari {sourceName}.";
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Evolve the active card using the matching card from hand. The hand card
+        /// becomes the active instance; the old active leaves play. No extra energy
+        /// is charged (the requirement sheet only assigns energy to attacks/retreats).
+        /// </summary>
+        public bool Evolve(CardInstance card)
+        {
+            if (!CanEvolve(card, out var error))
+            {
+                if (error != null)
+                    SetStatus(error);
+                return false;
+            }
+            return EvolveInternal(Player, card);
+        }
+
+        private bool EvolveInternal(PlayerState p, CardInstance card)
+        {
+            var oldActive = p.Active;
+            p.Hand.Remove(card);
+            p.Active = card;
+            OnPromoted?.Invoke(card, p.Side);
+            SetStatus(p.Side == Side.Player
+                ? $"{oldActive.DisplayName} berevolusi menjadi {card.DisplayName}!"
+                : $"Bot berevolusi: {oldActive.DisplayName} menjadi {card.DisplayName}!");
+            OnStateChanged?.Invoke();
+            return true;
+        }
+
         /// <summary>
         /// Playing a card from hand: battle cards and bench-passive supports (Mbok Sumi,
         /// Tumbal Anak) go to the bench; one-shot supports take effect and leave play.
+        /// Pasukan Obor / Amukan Warga instead evolve the matching active card.
         /// </summary>
         public bool PlayCardFromHand(CardInstance card)
         {
             if (Phase != Phase.PlayerTurn || card == null || !Player.Hand.Contains(card))
                 return false;
+
+            if (BattleRules.IsEvolutionOnly(card))
+                return Evolve(card);
 
             if (card.IsSupport && IsOneShotSupport(card))
             {
@@ -280,9 +418,9 @@ namespace TcgBattle.Gameplay
                 error = "Bangku kosong.";
                 return false;
             }
-            if (!BenchHasBattleCard(Player))
+            if (!BenchHasLegalActiveCard(Player))
             {
-                error = "Bangku hanya berisi kartu pasif.";
+                error = "Tidak ada kartu bangku yang bisa menjadi aktif.";
                 return false;
             }
             if (!HasFreeRetreat(Player) && Player.Energy < Player.Active.RetreatCost)
@@ -293,10 +431,10 @@ namespace TcgBattle.Gameplay
             return true;
         }
 
-        private static bool BenchHasBattleCard(PlayerState p)
+        private static bool BenchHasLegalActiveCard(PlayerState p)
         {
             foreach (var c in p.Bench)
-                if (c.IsBattle)
+                if (BattleRules.CanEnterActiveDirectly(c))
                     return true;
             return false;
         }
@@ -309,7 +447,7 @@ namespace TcgBattle.Gameplay
                     SetStatus(error);
                 return false;
             }
-            var swap = FindFirstBattleCardInList(Player.Bench);
+            var swap = FindFirstLegalActiveCardInList(Player.Bench);
             if (swap == null)
                 return false;
             if (!HasFreeRetreat(Player))
@@ -333,6 +471,13 @@ namespace TcgBattle.Gameplay
         {
             if (Phase != Phase.PlayerTurn || target == null || !Player.Bench.Contains(target))
                 return false;
+            if (!BattleRules.CanEnterActiveDirectly(target))
+            {
+                SetStatus(BattleRules.IsEvolutionOnly(target)
+                    ? $"{target.DisplayName} hanya bisa masuk posisi aktif lewat evolusi."
+                    : "Kartu pasif tidak bisa menjadi kartu aktif.");
+                return false;
+            }
             if (!CanRetreat(out var error))
             {
                 if (error != null)
@@ -405,14 +550,23 @@ namespace TcgBattle.Gameplay
 
         public bool BotPlayToBench(CardInstance card)
         {
+            if (BattleRules.IsEvolutionOnly(card))
+                return false;
             return PlayCardInternal(Bot, Player, card);
+        }
+
+        public bool BotEvolve(CardInstance card)
+        {
+            if (!CanEvolveForSide(Bot, card, out _))
+                return false;
+            return EvolveInternal(Bot, card);
         }
 
         public bool BotRetreat()
         {
             if (Phase != Phase.BotTurn || Bot.Active == null || Bot.Bench.Count == 0)
                 return false;
-            var swap = FindFirstBattleCardInList(Bot.Bench);
+            var swap = FindFirstLegalActiveCardInList(Bot.Bench);
             if (swap == null)
                 return false;
             if (!HasFreeRetreat(Bot) && Bot.Energy < Bot.Active.RetreatCost)
@@ -457,7 +611,7 @@ namespace TcgBattle.Gameplay
         {
             if (Phase != Phase.BotTurn || Bot.Active == null || Bot.Bench.Count == 0)
                 return false;
-            if (!BenchHasBattleCard(Bot))
+            if (!BenchHasLegalActiveCard(Bot))
                 return false;
             return HasFreeRetreat(Bot) || Bot.Energy >= Bot.Active.RetreatCost;
         }
@@ -484,6 +638,8 @@ namespace TcgBattle.Gameplay
                 return true;
             }
 
+            if (BattleRules.IsEvolutionOnly(card))
+                return false;
             if (p.Bench.Count >= BattleRules.BenchLimit)
                 return false;
             p.Hand.Remove(card);
@@ -581,11 +737,11 @@ namespace TcgBattle.Gameplay
         private CardInstance FindPromotableBattleCard(PlayerState p)
         {
             foreach (var c in p.Bench)
-                if (c.IsBattle)
+                if (BattleRules.CanEnterActiveDirectly(c))
                     return c;
             if (p.Active == null)
                 foreach (var c in p.Hand)
-                    if (c.IsBattle)
+                    if (BattleRules.CanEnterActiveDirectly(c))
                         return c;
             return null;
         }
@@ -683,10 +839,10 @@ namespace TcgBattle.Gameplay
 
         // ------------------------------------------------------------------ helpers
 
-        private CardInstance FindFirstBattleCardInList(List<CardInstance> list)
+        private static CardInstance FindFirstLegalActiveCardInList(List<CardInstance> list)
         {
             foreach (var c in list)
-                if (c.IsBattle)
+                if (BattleRules.CanEnterActiveDirectly(c))
                     return c;
             return null;
         }
