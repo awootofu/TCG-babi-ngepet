@@ -20,6 +20,33 @@ namespace TcgBattle.Gameplay
         public const string WargaEvolution1Id = "PO";
         public const string WargaEvolution2Id = "AW";
 
+        // Pak Karta's free transformation line. Mbok Sumi is the bench catalyst;
+        // Babi Ngepet / Siluman Babi are the two legal replacement forms.
+        public const string PakKartaId = "PK";
+        public const string MbokSumiId = "MS";
+        public const string BabiNgepetId = "BN";
+        public const string SilumanBabiId = "SB";
+
+        public static bool IsPakKartaTransformForm(string cardId)
+        {
+            return cardId == BabiNgepetId || cardId == SilumanBabiId;
+        }
+
+        /// <summary>
+        /// Evolution keeps the damage already taken, measured against the old card's
+        /// printed maximum. The result is clamped to the evolved card's valid HP range.
+        /// </summary>
+        public static int EvolutionHpAfterDamage(int oldMaxHp, int oldCurrentHp, int newMaxHp)
+        {
+            int damageTaken = oldMaxHp - oldCurrentHp;
+            int newCurrentHp = newMaxHp - damageTaken;
+            if (newCurrentHp < 0)
+                return 0;
+            if (newCurrentHp > newMaxHp)
+                return newMaxHp;
+            return newCurrentHp;
+        }
+
         public static string EvolutionSource(string cardId)
         {
             if (cardId == WargaEvolution1Id)

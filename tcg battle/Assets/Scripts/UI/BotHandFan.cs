@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.UI;
 using TcgBattle.Gameplay;
 
 namespace TcgBattle.UI
@@ -11,13 +10,14 @@ namespace TcgBattle.UI
     /// Compact, deliberately unreadable opponent hand: a fan of generic face-down card
     /// backs whose count mirrors BattleManager.Bot.Hand. The fan never binds a CardView,
     /// artwork, name, stat or tooltip, so hidden information cannot leak through hover or
-    /// inspection. Draws animate a back out of the deck stack; plays send a generic back
-    /// toward the committed destination. Purely cosmetic - it never affects battle timing.
+    /// inspection. Draws animate a temporary back from the visible deck pile into the fan;
+    /// plays send a generic back toward the committed destination. Purely cosmetic - it
+    /// never affects battle timing.
     /// </summary>
     public class BotHandFan : MonoBehaviour
     {
         private const float FanOpacity = 0.32f;
-        private const float DrawTime = 0.26f;
+        private const float DrawTime = 0.32f;
         private const float PlayTime = 0.32f;
 
         private RectTransform _root;
@@ -54,9 +54,14 @@ namespace TcgBattle.UI
         /// <summary>Start a new match without animating the previous hand out.</summary>
         public void ResetVisuals()
         {
+            FinishDrawAnimations();
             StopAllCoroutines();
             for (int i = transform.childCount - 1; i >= 0; i--)
-                Destroy(transform.GetChild(i).gameObject);
+            {
+                var child = transform.GetChild(i).gameObject;
+                child.SetActive(false);
+                Destroy(child);
+            }
             _cards.Clear();
             _backs.Clear();
             _hasSynced = false;
@@ -104,7 +109,15 @@ namespace TcgBattle.UI
             _cards.AddRange(hand);
 
             while (_backs.Count < _cards.Count)
-                _backs.Add(CreateBack(transform, "BotHandBack" + _backs.Count, _baseCard * _k));
+            {
+                var back = CardBackVisual.Create(transform, "BotHandBack" + _backs.Count,
+                    _baseCard * _k);
+                var group = back.gameObject.AddComponent<CanvasGroup>();
+                group.alpha = 1f;
+                group.interactable = false;
+                group.blocksRaycasts = false;
+                _backs.Add(back);
+            }
             while (_backs.Count > _cards.Count)
             {
                 int last = _backs.Count - 1;
@@ -120,12 +133,20 @@ namespace TcgBattle.UI
                     if (!oldCards.Contains(_cards[i]))
                         additions.Add(_cards[i]);
             }
+            else
+            {
+                // If the UI binds after setup (or after a restart with a live hand),
+                // the opening hand still gets the same deck-to-fan travel.
+                for (int i = 0; i < _cards.Count; i++)
+                    additions.Add(_cards[i]);
+            }
 
-            Layout(additions);
+            Layout();
             _hasSynced = true;
+            AnimateAdditions(additions);
         }
 
-        private void Layout(HashSet<CardInstance> animateIn = null)
+        private void Layout()
         {
             if (_root == null)
                 return;
@@ -140,9 +161,6 @@ namespace TcgBattle.UI
                 ? Mathf.Min(BaseStep * _k, Mathf.Max(0f, maxRow - cardW) / (n - 1))
                 : 0f;
             float total = step * (n - 1);
-            Vector2 fromDeck = _deckAnchor != null
-                ? (Vector2)_root.InverseTransformPoint(_deckAnchor.position)
-                : Vector2.zero;
 
             for (int i = 0; i < n; i++)
             {
@@ -157,49 +175,54 @@ namespace TcgBattle.UI
                 var finalPos = new Vector2(-total * 0.5f + i * step, -Mathf.Abs(t) * BaseArc * _k);
                 float rot = 180f + t * BaseRotation;
                 back.SetAsLastSibling();
-
-                bool animate = animateIn != null && i < _cards.Count && animateIn.Contains(_cards[i]);
-                if (animate)
-                {
-                    back.anchoredPosition = fromDeck;
-                    back.localRotation = Quaternion.identity;
-                    back.localScale = Vector3.one;
-                    StartCoroutine(DrawIn(back, finalPos, rot));
-                }
-                else
-                {
-                    back.anchoredPosition = finalPos;
-                    back.localRotation = Quaternion.Euler(0f, 0f, rot);
-                    back.localScale = Vector3.one;
-                }
+                back.anchoredPosition = finalPos;
+                back.localRotation = Quaternion.Euler(0f, 0f, rot);
+                back.localScale = Vector3.one;
             }
         }
 
-        private IEnumerator DrawIn(RectTransform back, Vector2 finalPos, float finalRot)
+        private void AnimateAdditions(HashSet<CardInstance> additions)
         {
-            Vector2 from = back.anchoredPosition;
-            float t = 0f;
-            while (t < DrawTime)
+            if (!_hasSynced || additions == null || additions.Count == 0 || _deckAnchor == null)
+                return;
+
+            int order = 0;
+            for (int i = 0; i < _cards.Count && i < _backs.Count; i++)
             {
+                if (!additions.Contains(_cards[i]))
+                    continue;
+                var back = _backs[i];
                 if (back == null)
-                    yield break;
-                t += Time.unscaledDeltaTime;
-                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / DrawTime));
-                back.anchoredPosition = Vector2.LerpUnclamped(from, finalPos, k);
-                back.localRotation = Quaternion.Euler(0f, 0f, Mathf.Lerp(0f, finalRot, k));
-                yield return null;
+                    continue;
+
+                var group = back.GetComponent<CanvasGroup>();
+                if (group == null)
+                    group = back.gameObject.AddComponent<CanvasGroup>();
+                group.alpha = 0f;
+                group.interactable = false;
+                group.blocksRaycasts = false;
+
+                // A tiny stagger keeps rapid consecutive draws legible, but stays far
+                // below the turn pacing so gameplay is never delayed.
+                float delay = Mathf.Min(order * 0.035f, 0.14f);
+                CardDrawFx.Play(_root, _deckAnchor, back, _baseCard * _k, DrawTime, delay, null);
+                order++;
             }
-            if (back != null)
-            {
-                back.anchoredPosition = finalPos;
-                back.localRotation = Quaternion.Euler(0f, 0f, finalRot);
-            }
+        }
+
+        /// <summary>Snap any in-flight draw to the fan (used when the match ends).</summary>
+        public void FinishDrawAnimations()
+        {
+            var fxs = GetComponentsInChildren<CardDrawFx>(true);
+            for (int i = fxs.Length - 1; i >= 0; i--)
+                if (fxs[i] != null)
+                    fxs[i].Cancel();
         }
 
         private void SpawnPlayGhost(CardInstance card, Vector2 fromPos, Quaternion fromRot,
             RectTransform target)
         {
-            var ghost = CreateBack(_root, "BotHandPlayGhost", _baseCard * _k);
+            var ghost = CardBackVisual.Create(_root, "BotHandPlayGhost", _baseCard * _k);
             ghost.anchoredPosition = fromPos;
             ghost.localRotation = fromRot;
             ghost.SetAsLastSibling();
@@ -232,122 +255,6 @@ namespace TcgBattle.UI
             }
             if (ghost != null)
                 Destroy(ghost.gameObject);
-        }
-
-        /// <summary>Two static mini backs make the draw origin readable without a counter.</summary>
-        public void BuildDeckStack(RectTransform deckRoot)
-        {
-            if (deckRoot == null)
-                return;
-
-            var group = deckRoot.gameObject.GetComponent<CanvasGroup>();
-            if (group == null)
-                group = deckRoot.gameObject.AddComponent<CanvasGroup>();
-            group.alpha = FanOpacity;
-            group.interactable = false;
-            group.blocksRaycasts = false;
-
-            var under = CreateBack(deckRoot, "DeckUnder", new Vector2(70f, 94f));
-            under.anchoredPosition = new Vector2(-6f, 6f);
-            under.localRotation = Quaternion.Euler(0f, 0f, -4f);
-            var top = CreateBack(deckRoot, "DeckTop", new Vector2(70f, 94f));
-            top.anchoredPosition = Vector2.zero;
-            top.localRotation = Quaternion.Euler(0f, 0f, 3f);
-        }
-
-        private RectTransform CreateBack(Transform parent, string name, Vector2 size)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            var rt = (RectTransform)go.transform;
-            rt.SetParent(parent, false);
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = size;
-
-            var shadow = MakeImage(rt, "Shadow", UiSpriteFactory.SoftShadow,
-                new Color(0f, 0f, 0f, 0.45f));
-            Stretch(shadow.rectTransform, -8f, -8f, -8f, -8f);
-
-            var backing = MakeImage(rt, "Backing", UiSpriteFactory.Rounded,
-                Hex(0x1E1730));
-            backing.type = Image.Type.Sliced;
-            Stretch(backing.rectTransform, 0f, 0f, 0f, 0f);
-
-            var frame = MakeImage(rt, "Frame", UiSpriteFactory.RoundOutline,
-                new Color(0.95f, 0.90f, 0.80f, 0.66f));
-            frame.type = Image.Type.Sliced;
-            Stretch(frame.rectTransform, 2f, 2f, 2f, 2f);
-
-            var inner = MakeImage(rt, "InnerLine", UiSpriteFactory.RoundOutline,
-                new Color(0.85f, 0.66f, 0.26f, 0.46f));
-            inner.type = Image.Type.Sliced;
-            Stretch(inner.rectTransform, 8f, 8f, 8f, 8f);
-
-            // Small top-edge gilding gives the otherwise symmetric back a visible
-            // "up": when the opponent fan is turned 180 degrees, this sits at the
-            // bottom. It is a back ornament only - no text, art, stats or identity.
-            var topMark = MakeImage(rt, "TopEdgeMark", UiSpriteFactory.Rounded,
-                new Color(0.95f, 0.90f, 0.80f, 0.72f));
-            topMark.type = Image.Type.Sliced;
-            topMark.rectTransform.anchorMin = topMark.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-            topMark.rectTransform.sizeDelta = new Vector2(size.x * 0.30f, 3f);
-            topMark.rectTransform.anchoredPosition = new Vector2(0f, size.y * 0.39f);
-
-            var diamond = MakeImage(rt, "Diamond", UiSpriteFactory.Diamond,
-                new Color(0.85f, 0.66f, 0.26f, 0.74f));
-            diamond.rectTransform.anchorMin = diamond.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-            diamond.rectTransform.sizeDelta = new Vector2(34f, 34f) * (size.x / 123f);
-
-            var diamondCore = MakeImage(rt, "DiamondCore", UiSpriteFactory.Diamond,
-                new Color(0.12f, 0.09f, 0.19f, 0.92f));
-            diamondCore.rectTransform.anchorMin = diamondCore.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
-            diamondCore.rectTransform.sizeDelta = new Vector2(21f, 21f) * (size.x / 123f);
-
-            float dx = size.x * 0.32f;
-            float dy = size.y * 0.34f;
-            AddCornerDiamond(rt, "CornerTL", new Vector2(-dx, dy), size);
-            AddCornerDiamond(rt, "CornerTR", new Vector2(dx, dy), size);
-            AddCornerDiamond(rt, "CornerBL", new Vector2(-dx, -dy), size);
-            AddCornerDiamond(rt, "CornerBR", new Vector2(dx, -dy), size);
-            return rt;
-        }
-
-        private static void AddCornerDiamond(RectTransform parent, string name, Vector2 pos, Vector2 size)
-        {
-            var d = MakeImage(parent, name, UiSpriteFactory.Diamond,
-                new Color(0.85f, 0.66f, 0.26f, 0.55f));
-            var rt = d.rectTransform;
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(7f, 7f) * (size.x / 123f);
-            rt.anchoredPosition = pos;
-        }
-
-        private static Image MakeImage(Transform parent, string name, Sprite sprite, Color color)
-        {
-            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
-            var rt = (RectTransform)go.transform;
-            rt.SetParent(parent, false);
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            var img = go.GetComponent<Image>();
-            img.sprite = sprite;
-            img.color = color;
-            img.raycastTarget = false;
-            return img;
-        }
-
-        private static void Stretch(RectTransform rt, float left, float bottom, float right, float top)
-        {
-            rt.anchorMin = Vector2.zero;
-            rt.anchorMax = Vector2.one;
-            rt.offsetMin = new Vector2(left, bottom);
-            rt.offsetMax = new Vector2(-right, -top);
-        }
-
-        private static Color Hex(int rgba)
-        {
-            return new Color32((byte)(rgba >> 16 & 0xFF), (byte)(rgba >> 8 & 0xFF),
-                (byte)(rgba & 0xFF), 0xFF);
         }
     }
 }
