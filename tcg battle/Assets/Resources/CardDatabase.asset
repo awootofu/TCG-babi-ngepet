@@ -95,20 +95,16 @@ MonoBehaviour:
     effect: 3
     effectValue: 50
   playerDeck:
-  - cardId: BN
-    copies: 3
   - cardId: PK
     copies: 4
+  - cardId: BN
+    copies: 4
   - cardId: SB
-    copies: 3
+    copies: 4
   - cardId: MS
     copies: 2
   - cardId: TA
-    copies: 2
-  - cardId: KL
-    copies: 3
-  - cardId: PJ
-    copies: 3
+    copies: 6
   botDeck:
   - cardId: WD
     copies: 4
@@ -116,13 +112,9 @@ MonoBehaviour:
     copies: 4
   - cardId: AW
     copies: 4
-  - cardId: MS
-    copies: 2
-  - cardId: TA
-    copies: 2
-  - cardId: KL
-    copies: 2
   - cardId: PJ
+    copies: 6
+  - cardId: KL
     copies: 2
   rulesText: 'Fire deals 2x damage to Dark cards. Dark deals 1x damage to Fire.
 

@@ -29,11 +29,26 @@ namespace TcgBattle.Gameplay
 
             yield return new WaitForSecondsRealtime(actionDelay);
 
-            // 1. Bench development: play up to two battle cards, then Mbok Sumi.
+            // 1. Evolve the active Warga line when the next form is in hand.
+            //    Evolution-only cards are never sent to the bench.
+            for (int i = 0; i < 2; i++)
+            {
+                if (battle.Bot.Active == null)
+                    break;
+                string nextId = BattleRules.EvolutionTarget(battle.Bot.Active.CardId);
+                if (nextId == null)
+                    break;
+                var evolution = FindCard(battle.Bot.Hand, nextId);
+                if (evolution == null || !battle.BotEvolve(evolution))
+                    break;
+                yield return new WaitForSecondsRealtime(actionDelay);
+            }
+
+            // 2. Bench development: play up to two basic battle cards, then Mbok Sumi.
             int played = 0;
             while (played < 2 && battle.Bot.Bench.Count < BattleRules.BenchLimit)
             {
-                var card = FindFirstBattleCard(battle.Bot.Hand);
+                var card = FindFirstBenchBattleCard(battle.Bot.Hand);
                 if (card == null)
                     break;
                 if (!battle.BotPlayToBench(card))
@@ -49,7 +64,7 @@ namespace TcgBattle.Gameplay
                 yield return new WaitForSecondsRealtime(actionDelay);
             }
 
-            // 2. Punarma: requires Babi Ngepet in the opposing active slot; boosts next attack.
+            // 3. Punarma: requires Babi Ngepet in the opposing active slot; boosts next attack.
             var pj = FindSupport(battle.Bot.Hand, Data.SupportEffect.PunarmaJumatLegiSingleShot);
             if (pj != null && battle.Player.Active != null && battle.Player.Active.CardId == "BN")
             {
@@ -57,7 +72,7 @@ namespace TcgBattle.Gameplay
                 yield return new WaitForSecondsRealtime(actionDelay);
             }
 
-            // 3. Kucing Liar: snipes the player's bench Mbok Sumi.
+            // 4. Kucing Liar: snipes the player's bench Mbok Sumi.
             var kl = FindSupport(battle.Bot.Hand, Data.SupportEffect.KucingLiarSingleShot);
             if (kl != null && BattleManager.BenchContainsMbokSumi(battle.Player))
             {
@@ -65,7 +80,7 @@ namespace TcgBattle.Gameplay
                 yield return new WaitForSecondsRealtime(actionDelay);
             }
 
-            // 4. Attack if legal, otherwise consider a tactical retreat.
+            // 5. Attack if legal, otherwise consider a tactical retreat.
             if (battle.CanBotAttack())
             {
                 battle.BotAttack();
@@ -88,15 +103,23 @@ namespace TcgBattle.Gameplay
                 }
             }
 
-            // 5. End the turn (always legal for the bot).
+            // 6. End the turn (always legal for the bot).
             if (battle.Phase == Phase.BotTurn)
                 battle.BotEndTurn();
         }
 
-        private static CardInstance FindFirstBattleCard(System.Collections.Generic.List<CardInstance> list)
+        private static CardInstance FindFirstBenchBattleCard(System.Collections.Generic.List<CardInstance> list)
         {
             foreach (var c in list)
-                if (c.IsBattle)
+                if (c.IsBattle && !BattleRules.IsEvolutionOnly(c))
+                    return c;
+            return null;
+        }
+
+        private static CardInstance FindCard(System.Collections.Generic.List<CardInstance> list, string cardId)
+        {
+            foreach (var c in list)
+                if (c.CardId == cardId)
                     return c;
             return null;
         }

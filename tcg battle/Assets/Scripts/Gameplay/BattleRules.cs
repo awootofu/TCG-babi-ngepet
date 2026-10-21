@@ -14,6 +14,44 @@ namespace TcgBattle.Gameplay
         public const int EnergyCap = 9;
         public const int PointsToWin = 3;
 
+        // Warga Desa > Pasukan Obor > Amukan Warga. The two evolved battle cards
+        // may only enter the active slot through this line, never as a normal play.
+        public const string WargaBasicId = "WD";
+        public const string WargaEvolution1Id = "PO";
+        public const string WargaEvolution2Id = "AW";
+
+        public static string EvolutionSource(string cardId)
+        {
+            if (cardId == WargaEvolution1Id)
+                return WargaBasicId;
+            if (cardId == WargaEvolution2Id)
+                return WargaEvolution1Id;
+            return null;
+        }
+
+        public static string EvolutionTarget(string cardId)
+        {
+            if (cardId == WargaBasicId)
+                return WargaEvolution1Id;
+            if (cardId == WargaEvolution1Id)
+                return WargaEvolution2Id;
+            return null;
+        }
+
+        public static bool IsEvolutionOnly(CardInstance card)
+        {
+            return card != null && card.IsBattle && EvolutionSource(card.CardId) != null;
+        }
+
+        /// <summary>
+        /// Cards that may be put into the active slot without an evolution. Dark
+        /// battle cards and the basic Warga Desa qualify; PO and AW do not.
+        /// </summary>
+        public static bool CanEnterActiveDirectly(CardInstance card)
+        {
+            return card != null && card.IsBattle && !IsEvolutionOnly(card);
+        }
+
         /// <summary>Fire attacks deal 2x to Dark; Dark deals 1x to anything.</summary>
         public static int DamageMultiplier(Data.Element attacker, Data.Element defender)
         {
