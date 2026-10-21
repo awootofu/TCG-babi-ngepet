@@ -41,7 +41,7 @@ played on a portrait phone-style layout with the artist's original card artwork.
 | Card | Effect as implemented |
 |---|---|
 | **Mbok Sumi** (PASIF) | While she is on your bench, your retreat is free |
-| **Tumbal Anak** (PASIF) | While in your **hand**, the opposing Fire attack on **Babi Ngepet** is nullified (0 damage). Clicking it shows a hint; it is never played to the bench |
+| **Tumbal Anak** (PASIF) | While in your **hand**, the opposing Fire attack on **Babi Ngepet** is nullified (0 damage) and **one copy is consumed**. Clicking it shows a hint; it is never played to the bench |
 | **Kucing Liar** | When played: 40 damage to the opponent's bench **Mbok Sumi** (she leaves play, no score). Only playable while an enemy Mbok Sumi is benched |
 | **Punarma Jumat Legi** | When played: your **next attack this turn gains +50**. Only playable while **Babi Ngepet** is the opponents active card |
 
@@ -104,7 +104,7 @@ API while a tick-logger records every game event. Two full matches were run to
 
 | Run | Coin | Result | Notable event-trace evidence |
 |---|---|---|---|
-| 1 | Player first | **KAMU MENANG 3–0** | 15 attacks, Tumbal Anak nullified a Fire attack on Babi Ngepet (`Tumbal Anak menangkal serangan Warga Desa!`), bench + Mbok Sumi free-retreat used |
+| 1 | Player first | **KAMU MENANG 3–0** | 15 attacks, Tumbal Anak nullified a Fire attack on Babi Ngepet (the current rule also consumes one copy), bench + Mbok Sumi free-retreat used |
 | 2 | Bot first | **BOT MENANG 3–1** | Bot benched Warga Desa/Pasukan Obor/Mbok Sumi, Warga Desa dealt 60 (2× super-effective) KOs, damage chain 150→90→30→KO, auto-promotion after each KO, correct `Butuh 1 energi untuk mundur.` denial, score pips hit 3 |
 
 - Editor console: **0 errors** during both runs.
