@@ -11,6 +11,33 @@ namespace TcgBattle.UI
     public enum CardDisplayMode { Active, Bench, Hand, Hidden }
 
     /// <summary>
+    /// A read-only copy of the pixels currently shown by a CardView. Form-change FX use
+    /// this to keep the old card on screen while the authoritative state has already
+    /// moved to the new card. It contains no CardInstance and never enters gameplay.
+    /// </summary>
+    public struct CardVisualSnapshot
+    {
+        public Sprite Art;
+        public Sprite ElementIcon;
+        public string HpText;
+        public float HpFill;
+        public Color HpColor;
+        public float HpFontSize;
+        public string CostText;
+        public string SupportText;
+        public Color BackingColor;
+        public Color FrameColor;
+        public Color DimColor;
+        public Color SupportChipColor;
+        public bool ShowArt;
+        public bool ShowStrip;
+        public bool ShowCost;
+        public bool ShowElement;
+        public bool ShowSupport;
+        public bool ShowFrame;
+    }
+
+    /// <summary>
     /// Reusable card visual. Shows the artist's full-card artwork (which already has the
     /// name, attack, flavor and frame baked in) plus lightweight live overlays:
     /// HP bar + text, element icon, attack-energy cost, KO/selected states.
@@ -263,6 +290,76 @@ namespace TcgBattle.UI
 
             SetDimmed(false);
             SetHovered(false);
+            SetSelected(false);
+            SetEligible(false);
+            SetTarget(false, false);
+        }
+
+        /// <summary>
+        /// Copy the currently rendered card face. Must be called before the view is
+        /// rebound, so an evolution/transformation can animate away from the old face.
+        /// </summary>
+        public CardVisualSnapshot CaptureVisual()
+        {
+            EnsureBuilt();
+            return new CardVisualSnapshot
+            {
+                Art = _art.sprite,
+                ElementIcon = _elementIcon.sprite,
+                HpText = _hpText.text,
+                HpFill = _hpFill.fillAmount,
+                HpColor = _hpFill.color,
+                HpFontSize = _hpText.fontSize,
+                CostText = _costText.text,
+                SupportText = _supportText.text,
+                BackingColor = _backing.color,
+                FrameColor = _frame.color,
+                DimColor = _dim.color,
+                SupportChipColor = _supportChip.color,
+                ShowArt = _art.gameObject.activeSelf,
+                ShowStrip = _hpBg.transform.parent.gameObject.activeSelf,
+                ShowCost = _costChip.gameObject.activeSelf,
+                ShowElement = _elementChip.gameObject.activeSelf,
+                ShowSupport = _supportChip.gameObject.activeSelf,
+                ShowFrame = _frame.gameObject.activeSelf,
+            };
+        }
+
+        /// <summary>
+        /// Apply a captured face to a throwaway CardView. The root transform is left
+        /// alone, which lets a form-change ghost swap faces at the flash peak without
+        /// resetting its spin/lift/scale.
+        /// </summary>
+        public void BindVisual(CardVisualSnapshot visual, CardDisplayMode mode)
+        {
+            Card = null;
+            Mode = mode;
+            gameObject.SetActive(true);
+            EnsureBuilt();
+
+            _art.sprite = visual.Art;
+            _art.gameObject.SetActive(visual.ShowArt);
+            _elementIcon.sprite = visual.ElementIcon;
+            _elementIcon.gameObject.SetActive(visual.ShowElement);
+            _elementChip.gameObject.SetActive(visual.ShowElement);
+            _costChip.gameObject.SetActive(visual.ShowCost);
+            _costText.text = visual.CostText;
+            _supportChip.gameObject.SetActive(visual.ShowSupport);
+            _supportChip.color = visual.SupportChipColor;
+            _supportText.text = visual.SupportText;
+            _backing.color = visual.BackingColor;
+            _frame.gameObject.SetActive(visual.ShowFrame);
+            _frame.color = visual.FrameColor;
+            _frameDefault = visual.FrameColor;
+            _dim.color = visual.DimColor;
+
+            var strip = _hpBg.transform.parent.gameObject;
+            strip.SetActive(visual.ShowStrip);
+            _hpFill.fillAmount = visual.HpFill;
+            _hpFill.color = visual.HpColor;
+            _hpText.text = visual.HpText;
+            _hpText.fontSize = visual.HpFontSize;
+
             SetSelected(false);
             SetEligible(false);
             SetTarget(false, false);
