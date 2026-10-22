@@ -38,7 +38,9 @@ namespace TcgBattle.Gameplay
         public event Action<CardInstance, Side> OnDrawn;
         public event Action<Side> OnEnergyChanged;
         public event Action<CardInstance, Side> OnSupportUsed;  // support consumed (one-shot or Tumbal Anak shield)
-        public event Action<CardInstance, Side> OnTransformed;  // Pak Karta -> BN / SB
+        public event Action<CardInstance, CardInstance, Side> OnEvolved; // old active, new active, side
+        public event Action<CardInstance, Side> OnTransformed;           // form committed (legacy signature)
+        public event Action<CardInstance, string, Side> OnTransformedFrom; // new active, old display name, side
         public event Action<CardInstance, Side> OnSupportDestroyed; // Kucing Liar killing bench MS
         public event Action<bool> OnCoinFlipped;                // playerStartsFirst
         public event Action<Side> OnGameOver;                   // winner
@@ -370,6 +372,10 @@ namespace TcgBattle.Gameplay
             p.Hand.Remove(card);
             card.CurrentHp = carriedHp;
             p.Active = card;
+
+            // The form change is already authoritative here. The UI captures the old
+            // visuals synchronously, then plays the cosmetic reveal after the refresh.
+            OnEvolved?.Invoke(oldActive, card, p.Side);
             OnPromoted?.Invoke(card, p.Side);
             SetStatus(p.Side == Side.Player
                 ? $"{oldActive.DisplayName} berevolusi menjadi {card.DisplayName}! ({card.CurrentHp}/{card.MaxHp} HP)"
@@ -452,6 +458,7 @@ namespace TcgBattle.Gameplay
 
             SetStatus($"{oldName} berubah menjadi {def.displayName}!");
             OnTransformed?.Invoke(active, Side.Player);
+            OnTransformedFrom?.Invoke(active, oldName, Side.Player);
             OnStateChanged?.Invoke();
             return true;
         }

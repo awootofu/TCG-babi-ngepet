@@ -207,9 +207,18 @@ namespace TcgBattle.UI
 
         private void OnEnable()
         {
-            // Pointer state cannot be trusted across deactivation; snap to the current state.
+            // Pointer state and press-scale cannot be trusted across deactivation: a
+            // click handler can hide the overlay before PointerUp arrives, and that
+            // deactivation also stops the scale coroutine mid-shrink. Snap both back.
             _hovering = false;
             _pressed = false;
+            if (_scaleAnim != null)
+            {
+                StopCoroutine(_scaleAnim);
+                _scaleAnim = null;
+            }
+            if (_rt != null)
+                _rt.localScale = _base;
             Refresh(instant: true);
         }
 

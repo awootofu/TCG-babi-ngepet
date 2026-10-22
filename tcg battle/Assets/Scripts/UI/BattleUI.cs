@@ -89,6 +89,18 @@ namespace TcgBattle.UI
         private CardView[] transformChoiceViews;
         private TMP_Text transformErrorText;
         private Coroutine transformFade;
+        private RectTransform formFxLayer;
+        private CardFormFx formFxPlayer, formFxBot;
+        private RectTransform combatFxLayer;
+        private RectTransform playerStaminaRoot, botStaminaRoot;
+        private int _fxEpoch;
+        private bool _combatBusy;
+        private int _lastPlayerEnergy, _lastBotEnergy;
+        private bool _shieldPending;
+        private Side _shieldSide;
+        private bool _restarting;
+        private Coroutine _attackRoutine;
+        private Coroutine _playerActiveSlotIn, _botActiveSlotIn;
         private GameObject coinOverlay;
         private Image coinImage, coinRing;
         private Image coinGlow, coinGlow2;
@@ -106,6 +118,16 @@ namespace TcgBattle.UI
         private CardInstance _pendingRetreatPlayer, _pendingRetreatBot;
         private readonly List<CardInstance> _pendingPlayerDraws = new List<CardInstance>();
         private readonly HashSet<CardInstance> _pendingPlayerDrawSet = new HashSet<CardInstance>();
+
+        private struct PendingFormFx
+        {
+            public Side Side;
+            public CardInstance NewCard;
+            public CardVisualSnapshot OldVisual;
+            public string Heading;
+            public string Path;
+        }
+        private readonly List<PendingFormFx> _pendingFormFx = new List<PendingFormFx>();
 
         private Coroutine turnBannerRoutine;
         private BattleManager _boundManager;
@@ -128,6 +150,15 @@ namespace TcgBattle.UI
             _boundManager = battle;
 
             // queued animations from a previous match must not leak into the new one
+            StopAllCoroutines();
+            ResetHudTransforms();
+            turnBannerRoutine = null;
+            transformFade = null;
+            // Keep the restart guard latched through the bind: a second click in the
+            // same frame must not tear down the freshly-created match. ShowGameOver
+            // clears it when the next match actually ends.
+            ClearCombatFx();
+            ClearFormFx();
             FinishDrawAnimations();
             _pendingPromoPlayer = _pendingPromoBot = null;
             _pendingBenchPlayer = _pendingBenchBot = null;
@@ -138,6 +169,34 @@ namespace TcgBattle.UI
 
             if (canvasRt == null)
                 BuildAll();
+
+            if (overOverlay != null)
+            {
+                overOverlay.SetActive(false);
+                if (overGroup != null)
+                    overGroup.alpha = 0f;
+            }
+            if (coinOverlay != null)
+                coinOverlay.SetActive(false);
+            if (againBtn != null)
+                againBtn.interactable = !_restarting;
+            if (statusPill != null)
+            {
+                statusPill.gameObject.SetActive(true);
+                statusPill.color = ColIvory;
+            }
+            if (statusShadow != null)
+                statusShadow.gameObject.SetActive(true);
+            if (statusText != null)
+            {
+                statusText.color = ColInk;
+                statusText.text = "";
+            }
+            if (turnPillText != null)
+                turnPillText.text = "LEMPAR KOIN";
+
+            _lastPlayerEnergy = battle != null ? battle.Player.Energy : 0;
+            _lastBotEnergy = battle != null ? battle.Bot.Energy : 0;
 
             CloseTransformOverlayImmediate();
             Subscribe(mgr);
@@ -153,13 +212,15 @@ namespace TcgBattle.UI
             m.OnTurnStarted += ShowTurnBanner;
             m.OnAttack += HandleAttack;
             m.OnKnockedOut += HandleKo;
+            m.OnEvolved += HandleEvolved;
             m.OnPromoted += HandlePromoted;
             m.OnCardPlayedToBench += HandleBenchPlay;
             m.OnRetreated += HandleRetreat;
             m.OnScoreChanged += HandleScore;
             m.OnDrawn += HandleDraw;
-            m.OnTransformed += HandleTransformed;
+            m.OnTransformedFrom += HandleTransformed;
             m.OnSupportDestroyed += HandleSupportDestroyed;
+            m.OnSupportUsed += HandleSupportUsed;
             m.OnGameOver += ShowGameOver;
         }
 
@@ -172,13 +233,15 @@ namespace TcgBattle.UI
             m.OnTurnStarted -= ShowTurnBanner;
             m.OnAttack -= HandleAttack;
             m.OnKnockedOut -= HandleKo;
+            m.OnEvolved -= HandleEvolved;
             m.OnPromoted -= HandlePromoted;
             m.OnCardPlayedToBench -= HandleBenchPlay;
             m.OnRetreated -= HandleRetreat;
             m.OnScoreChanged -= HandleScore;
             m.OnDrawn -= HandleDraw;
-            m.OnTransformed -= HandleTransformed;
+            m.OnTransformedFrom -= HandleTransformed;
             m.OnSupportDestroyed -= HandleSupportDestroyed;
+            m.OnSupportUsed -= HandleSupportUsed;
             m.OnGameOver -= ShowGameOver;
         }
 
@@ -189,13 +252,16 @@ namespace TcgBattle.UI
             Unsubscribe(m);
             if (_boundManager == m)
                 _boundManager = null;
+            // Stop every cosmetic routine before hiding the board: an interrupted
+            // lunge/shake/slot-in must not keep writing transforms after a restart.
+            StopAllCoroutines();
+            ResetHudTransforms();
+            turnBannerRoutine = null;
+            transformFade = null;
+            ClearCombatFx();
+            ClearFormFx();
             FinishDrawAnimations();
             CloseTransformOverlayImmediate();
-            if (turnBannerRoutine != null)
-            {
-                StopCoroutine(turnBannerRoutine);
-                turnBannerRoutine = null;
-            }
             if (overOverlay != null)
                 overOverlay.SetActive(false);
             if (coinOverlay != null)
@@ -208,12 +274,11 @@ namespace TcgBattle.UI
         {
             if (_boundManager != null)
                 Unsubscribe(_boundManager);
+            StopAllCoroutines();
+            ClearCombatFx();
+            ClearFormFx();
             FinishDrawAnimations();
-            if (transformFade != null)
-            {
-                StopCoroutine(transformFade);
-                transformFade = null;
-            }
+            transformFade = null;
         }
 
         // ================================================================== build
@@ -243,6 +308,8 @@ namespace TcgBattle.UI
             BuildBotHandFan();
             BuildHand();
             BuildDrawFxLayer();
+            BuildFormFxLayer();
+            BuildCombatFxLayer();
             BuildOverlays();
             BuildTransformOverlay();
             BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
@@ -447,6 +514,7 @@ namespace TcgBattle.UI
         private void BuildStaminaBadge()
         {
             var playerRoot = NodeRight("PlayerStamina", 110f, 0.435f, new Vector2(148f, 148f));
+            playerStaminaRoot = playerRoot;
             var playerOuter = MakeChildImage(playerRoot, "Outer", UiSpriteFactory.Diamond,
                 new Color(0.85f, 0.66f, 0.26f, 0.88f), Vector2.zero, new Vector2(146f, 146f));
             playerOuter.raycastTarget = false;
@@ -466,6 +534,7 @@ namespace TcgBattle.UI
             playerCaption.text = "STAMINA";
 
             var botRoot = NodeRight("BotStamina", 110f, 0.7800f, new Vector2(74f, 74f));
+            botStaminaRoot = botRoot;
             var botOuter = MakeChildImage(botRoot, "Outer", UiSpriteFactory.Diamond,
                 new Color(0.55f, 0.42f, 0.15f, 0.72f), Vector2.zero, new Vector2(72f, 72f));
             botOuter.raycastTarget = false;
@@ -569,7 +638,7 @@ namespace TcgBattle.UI
             mundurLabel = mundurBtn.GetComponentInChildren<TMP_Text>();
             mundurBtn.onClick.AddListener(() =>
             {
-                if (battle != null)
+                if (battle != null && !_combatBusy)
                     battle.Retreat();
             });
 
@@ -578,7 +647,7 @@ namespace TcgBattle.UI
             serangLabel = serangBtn.GetComponentInChildren<TMP_Text>();
             serangBtn.onClick.AddListener(() =>
             {
-                if (battle != null)
+                if (battle != null && !_combatBusy)
                     battle.Attack();
             });
 
@@ -586,7 +655,7 @@ namespace TcgBattle.UI
                 430f, BandButtons, new Vector2(220f, 60f));
             endBtn.onClick.AddListener(() =>
             {
-                if (battle != null)
+                if (battle != null && !_combatBusy)
                     battle.EndPlayerTurn();
             });
         }
@@ -675,6 +744,41 @@ namespace TcgBattle.UI
             group.interactable = false;
             group.blocksRaycasts = false;
             playerDrawFxLayer = rt;
+        }
+
+        /// <summary>
+        /// Cosmetic layer for evolution/transformation ghosts. It sits above the board
+        /// and draw FX but below the game-over/transform overlays and inspect preview,
+        /// and never intercepts input. Form FX are destroyed wholesale on unbind.
+        /// </summary>
+        private void BuildFormFxLayer()
+        {
+            var go = new GameObject("FormFxLayer", typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            StretchFull(rt, 0f);
+            var group = go.AddComponent<CanvasGroup>();
+            group.interactable = false;
+            group.blocksRaycasts = false;
+            formFxLayer = rt;
+        }
+
+        /// <summary>
+        /// Cosmetic combat/feedback layer: damage numbers, impact rings, KO ghosts,
+        /// energy pops and turn flourishes. It is above the board and form FX but below
+        /// the modal overlays, and never intercepts input. Cleared wholesale on game
+        /// over/restart so no transient visual can outlive the match.
+        /// </summary>
+        private void BuildCombatFxLayer()
+        {
+            var go = new GameObject("CombatFxLayer", typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(safeRoot, false);
+            StretchFull(rt, 0f);
+            var group = go.AddComponent<CanvasGroup>();
+            group.interactable = false;
+            group.blocksRaycasts = false;
+            combatFxLayer = rt;
         }
 
         private void BuildHand()
@@ -781,8 +885,11 @@ namespace TcgBattle.UI
                 0f, 0.385f, new Vector2(300f, 80f), overRt);
             againBtn.onClick.AddListener(() =>
             {
-                if (starter != null)
-                    starter.Restart();
+                if (_restarting || starter == null)
+                    return;
+                _restarting = true;
+                againBtn.interactable = false;
+                starter.Restart();
             });
             overOverlay.SetActive(false);
         }
@@ -890,7 +997,7 @@ namespace TcgBattle.UI
 
         private void OpenTransformOverlay()
         {
-            if (battle == null || transformOverlay == null)
+            if (battle == null || transformOverlay == null || _combatBusy)
                 return;
             if (!battle.CanTransformPakKarta(out var error))
             {
@@ -1009,6 +1116,9 @@ namespace TcgBattle.UI
             if (battle == null || safeRoot == null)
                 return;
 
+            if (battle.Phase == Phase.GameOver)
+                ClearFormFx();
+
             bool setup = battle.Phase == Phase.Setup;
             bool myTurn = battle.Phase == Phase.PlayerTurn;
 
@@ -1074,11 +1184,11 @@ namespace TcgBattle.UI
                     turnPillBg.color = ColPanelInk;
                     break;
                 case Phase.PlayerTurn:
-                    turnPillText.text = "GILIRANMU";
+                    turnPillText.text = "GILIRANMU!";
                     turnPillBg.color = Hex(0x35294F);
                     break;
                 case Phase.BotTurn:
-                    turnPillText.text = "GILIRAN BOT";
+                    turnPillText.text = "GILIRAN LAWAN!";
                     turnPillBg.color = ColMaroon;
                     break;
                 case Phase.GameOver:
@@ -1153,6 +1263,11 @@ namespace TcgBattle.UI
                 AnimateSlotIn(FindBoardView(_pendingRetreatBot), new Vector2(250f, 22f) * _k);
                 _pendingRetreatBot = null;
             }
+
+            // Evolution/transformation visuals run after the active slot has rebound to
+            // the committed card, so the ghost can cover the new face and reveal it at
+            // the flash peak without touching gameplay state.
+            StartPendingFormFx();
         }
 
         /// <summary>
@@ -1253,9 +1368,30 @@ namespace TcgBattle.UI
 
         private void HandleEnergyChanged(Side side)
         {
-            // Energy can change without a board rebind (retreat/attack/steal). Update the
-            // rail immediately; the value itself remains owned by BattleManager.
+            if (battle == null)
+                return;
+
+            // Energy can change without a board rebind (retreat/attack/steal). The
+            // manager remains authoritative; this only compares the new authoritative
+            // value with the last value the rail displayed, so a duplicate callback can
+            // never show "+1" twice.
+            int now = side == Side.Player ? battle.Player.Energy : battle.Bot.Energy;
+            int previous = side == Side.Player ? _lastPlayerEnergy : _lastBotEnergy;
+            if (side == Side.Player)
+                _lastPlayerEnergy = now;
+            else
+                _lastBotEnergy = now;
+
             RefreshEnergyTexts();
+
+            int delta = now - previous;
+            if (delta <= 0 || battle.Phase == Phase.GameOver)
+                return;
+
+            var root = side == Side.Player ? playerStaminaRoot : botStaminaRoot;
+            if (root != null)
+                StartCoroutine(UiFx.Punch(root, 1.18f, 0.32f));
+            SpawnEnergyPopup(side, delta);
         }
 
         private void RefreshEnergyTexts()
@@ -1272,7 +1408,7 @@ namespace TcgBattle.UI
         private void OnCardClicked(CardView view)
         {
             var card = view.Card;
-            if (card == null || battle == null)
+            if (card == null || battle == null || _combatBusy)
                 return;
 
             // Hand card?
@@ -1327,14 +1463,42 @@ namespace TcgBattle.UI
 
         private void HandleAttack(CardInstance atk, Side side, CardInstance def, int dmg, bool effective)
         {
-            StartCoroutine(AttackAnim(atk, side, def, dmg, effective));
+            if (battle == null || atk == null || def == null || battle.Phase == Phase.GameOver)
+                return;
+            if (_combatBusy)
+                return;
+
+            Side defenderSide = side == Side.Player ? Side.Bot : Side.Player;
+            bool blocked = dmg <= 0 && _shieldPending && _shieldSide == defenderSide;
+            _shieldPending = false;
+
+            // The attack is cosmetic only: gameplay already resolved (or is about to
+            // resolve) in BattleManager. Lock clicks for this short presentation so a
+            // card click cannot open inspection mid-lunge.
+            CancelFormFxForSide(Side.Player);
+            CancelFormFxForSide(Side.Bot);
+            CancelActiveSlotIn(Side.Player);
+            CancelActiveSlotIn(Side.Bot);
+            ClearCombatFx();
+            _combatBusy = true;
+            _fxEpoch++;
+            int epoch = _fxEpoch;
+            if (hand != null)
+                hand.HideInspectPreview();
+            _inspectSourceView = null;
+            SetHandInput(false);
+
+            _attackRoutine = StartCoroutine(AttackAnim(atk, side, def, dmg, effective, blocked, epoch));
         }
 
-        private IEnumerator AttackAnim(CardInstance atk, Side side, CardInstance def, int dmg, bool effective)
+        private IEnumerator AttackAnim(CardInstance atk, Side side, CardInstance def, int dmg,
+            bool effective, bool blocked, int epoch)
         {
             var atkView = FindBoardView(atk);
             var defView = FindBoardView(def);
             float dir = side == Side.Player ? 1f : -1f;
+            var impactColor = ElementColor(atk.Element);
+            var hitColor = blocked ? ColGoldBright : impactColor;
 
             // Everything before the first yield runs before the manager applies damage:
             // capture the post-damage HP now so the bar can hold pre-damage, then drain
@@ -1343,10 +1507,16 @@ namespace TcgBattle.UI
             if (defView != null && dmg > 0)
                 defView.TweenHpTo(targetHp, def.MaxHp, 0.35f, 0.14f);
 
+            SetCardInput(atkView, false);
+            SetCardInput(defView, false);
+
             if (atkView != null)
-                StartCoroutine(Lunge(atkView.Root, dir, 0.30f));
+                StartCoroutine(Lunge(atkView.Root, dir, 0.30f, epoch));
 
             yield return new WaitForSecondsRealtime(0.14f);
+
+            if (epoch != _fxEpoch || battle == null || battle.Phase == Phase.GameOver)
+                yield break;
 
             // The manager may already have rebound this view to a promoted card if the
             // hit was lethal. Never shake/punch the replacement card for the old card's
@@ -1355,9 +1525,8 @@ namespace TcgBattle.UI
                 ReferenceEquals(defView.Card, def) && !def.IsKnockedOut;
             if (defenderStillBound)
             {
-                StartCoroutine(UiFx.Shake(defView.Root, 8f, 0.26f));
-                StartCoroutine(UiFx.Punch(defView.Root, 1.05f, 0.2f));
-                StartCoroutine(ImpactFlash(defView, effective));
+                StartCoroutine(CardHitReaction(defView.Root, atk.Element, 0.26f, epoch));
+                StartCoroutine(ImpactFlash(defView, hitColor, effective && !blocked, epoch));
             }
 
             var anchor = defenderStillBound
@@ -1367,34 +1536,60 @@ namespace TcgBattle.UI
                     : (atkView != null ? atkView.Root : null));
             if (anchor != null)
             {
-                string label = dmg <= 0 ? "TERTAHAN" : dmg.ToString();
-                var color = dmg <= 0 ? ColLavIdle : (effective ? ColGoldBright : ColIvory);
-                SpawnDamagePopup(anchor, label, color);
-                if (effective && dmg > 0)
-                    SpawnDamagePopup(anchor, "2x!", ColRed, extra: true);
+                if (blocked)
+                {
+                    SpawnFloatingLabel(anchor, "DITAHAN!", ColGoldBright,
+                        new Vector2(0f, 96f), new Vector2(300f, 76f), 40f, 0.9f);
+                    SpawnFloatingLabel(anchor, "TUMBAL ANAK", ColGold,
+                        new Vector2(0f, 24f), new Vector2(240f, 48f), 26f, 0.9f, true);
+                }
+                else
+                {
+                    string label = dmg > 0 ? $"-{dmg} HP" : "0 HP";
+                    var color = dmg <= 0 ? ColLavIdle : impactColor;
+                    SpawnDamagePopup(anchor, label, color);
+                    if (effective && dmg > 0)
+                        SpawnDamagePopup(anchor, "2x!", ColRed, extra: true);
+                }
             }
 
             // Belt-and-suspenders for non-lethal hits: once the cosmetic motion has
             // finished, snap surviving board cards back to the slot centre.
             yield return new WaitForSecondsRealtime(0.45f);
+            if (epoch != _fxEpoch || battle == null || battle.Phase == Phase.GameOver)
+                yield break;
+
             if (defenderStillBound && defView != null && ReferenceEquals(defView.Card, def) &&
                 defView.Root != null)
-                defView.Root.anchoredPosition = Vector2.zero;
-            if (atkView != null && ReferenceEquals(atkView.Card, atk) && atkView.Root != null)
-                atkView.Root.anchoredPosition = Vector2.zero;
+                ResetCardTransform(defView);
+            if (atkView != null && ReferenceEquals(atkView.Card, atk))
+                ResetCardTransform(atkView);
+
+            SetCardInput(atkView, true);
+            SetCardInput(defView, true);
+            SetHandInput(true);
+            _combatBusy = false;
+            _attackRoutine = null;
         }
 
-        private IEnumerator Lunge(RectTransform rt, float dir, float duration)
+        private IEnumerator Lunge(RectTransform rt, float dir, float duration, int epoch)
         {
             if (rt == null)
                 yield break;
             Vector2 basePos = rt.anchoredPosition;
-            float reach = 82f * _k;
+            // Keep the lunge inside the board bands: 82px pushed the active card
+            // under the control bar at 1920x1080. 60px still reads as a lunge while
+            // leaving the status pill/action row unobstructed.
+            float reach = 60f * _k;
             float t = 0f;
             while (t < duration)
             {
-                if (rt == null)
+                if (epoch != _fxEpoch || rt == null)
+                {
+                    if (rt != null)
+                        rt.anchoredPosition = basePos;
                     yield break;
+                }
                 t += Time.unscaledDeltaTime;
                 float k = Mathf.Clamp01(t / duration);
                 float s = Mathf.Sin(k * Mathf.PI);
@@ -1405,19 +1600,60 @@ namespace TcgBattle.UI
                 rt.anchoredPosition = basePos;
         }
 
-        private IEnumerator ImpactFlash(CardView view, bool effective)
+        /// <summary>
+        /// Owned target reaction (shake + small scale punch) so an interrupted attack
+        /// cannot leave a board card offset or oversized after game over/restart.
+        /// </summary>
+        private IEnumerator CardHitReaction(RectTransform rt, TcgBattle.Data.Element element,
+            float duration, int epoch)
         {
-            if (view == null || safeRoot == null)
+            if (rt == null)
+                yield break;
+            Vector2 basePos = rt.anchoredPosition;
+            Vector3 baseScale = rt.localScale;
+            float strength = (element == TcgBattle.Data.Element.Fire ? 9f : 7f) *
+                (_k > 0.01f ? _k : 1f);
+            float t = 0f;
+            while (t < duration)
+            {
+                if (epoch != _fxEpoch || rt == null)
+                {
+                    if (rt != null)
+                    {
+                        rt.anchoredPosition = basePos;
+                        rt.localScale = baseScale;
+                    }
+                    yield break;
+                }
+                t += Time.unscaledDeltaTime;
+                float k = Mathf.Clamp01(t / duration);
+                float decay = 1f - k;
+                float x = Mathf.Sin(t * 90f) * strength * decay;
+                rt.anchoredPosition = basePos + new Vector2(x, 0f);
+                float scale = 1f + 0.045f * Mathf.Sin(k * Mathf.PI);
+                rt.localScale = baseScale * scale;
+                yield return null;
+            }
+            if (rt != null)
+            {
+                rt.anchoredPosition = basePos;
+                rt.localScale = baseScale;
+            }
+        }
+
+        private IEnumerator ImpactFlash(CardView view, Color color, bool effective, int epoch)
+        {
+            if (view == null || combatFxLayer == null)
                 yield break;
             // Safe-root space so a KO rebind can never drag the effect onto the promoted card.
             Vector2 pos = CanvasLocal(view.Root);
             Vector2 size = view.Root.rect.size;
 
-            SpawnRing(view.Root, effective ? ColGoldBright : ColIvory, 26f, 0.30f);
+            SpawnRing(view.Root, color, effective ? 34f : 26f, 0.30f);
 
             var go = new GameObject("ImpactFlash", typeof(RectTransform), typeof(Image));
             var rt = (RectTransform)go.transform;
-            rt.SetParent(safeRoot, false);
+            rt.SetParent(FxParent, false);
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.sizeDelta = size;
@@ -1426,7 +1662,24 @@ namespace TcgBattle.UI
             flash.sprite = UiSpriteFactory.Rounded;
             flash.type = Image.Type.Sliced;
             flash.raycastTarget = false;
-            yield return UiFx.FlashOut(flash, 0.20f, 0.55f);
+            flash.color = WithA(color, 0.55f);
+
+            float t = 0f;
+            while (t < 0.20f)
+            {
+                if (epoch != _fxEpoch || flash == null || rt == null)
+                {
+                    if (go != null)
+                        Destroy(go);
+                    yield break;
+                }
+                t += Time.unscaledDeltaTime;
+                float a = 0.55f * (1f - Mathf.Clamp01(t / 0.20f));
+                flash.color = WithA(color, a);
+                yield return null;
+            }
+            if (go != null)
+                Destroy(go);
         }
 
         /// <summary>Expanding outline ring used for impacts, KOs and support destruction.</summary>
@@ -1436,7 +1689,7 @@ namespace TcgBattle.UI
                 return;
             var go = new GameObject("FxRing", typeof(RectTransform), typeof(Image));
             var rt = (RectTransform)go.transform;
-            rt.SetParent(safeRoot, false);
+            rt.SetParent(FxParent, false);
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.sizeDelta = anchor.rect.size + new Vector2(extra, extra);
@@ -1477,10 +1730,13 @@ namespace TcgBattle.UI
 
         private void HandleKo(CardInstance card, Side side)
         {
-            StartCoroutine(KoAnim(card, side));
+            if (card == null)
+                return;
+            CancelFormFxForSide(side);
+            StartCoroutine(KoAnim(card, side, _fxEpoch));
         }
 
-        private IEnumerator KoAnim(CardInstance card, Side side)
+        private IEnumerator KoAnim(CardInstance card, Side side, int epoch)
         {
             var view = FindBoardView(card);
             if (view == null)
@@ -1492,14 +1748,18 @@ namespace TcgBattle.UI
             Vector2 size = view.Root.sizeDelta;
             float angle = view.Root.localRotation.eulerAngles.z;
 
-            // Ghost copy that fades out while the real slot rebinds to the promoted card.
+            // Ghost copy that fades, drifts and shrinks while the real slot rebinds to
+            // the promoted card. It is purely visual and never owns the card data.
             var ghost = new GameObject("KoGhost", typeof(RectTransform));
             var ghostRt = (RectTransform)ghost.transform;
-            ghostRt.SetParent(safeRoot, false);
+            ghostRt.SetParent(FxParent, false);
             ghostRt.anchorMin = ghostRt.anchorMax = new Vector2(0.5f, 0.5f);
             ghostRt.sizeDelta = size;
             ghostRt.anchoredPosition = pos;
             ghostRt.localRotation = Quaternion.Euler(0f, 0f, angle);
+            var ghostGroup = ghost.AddComponent<CanvasGroup>();
+            ghostGroup.interactable = false;
+            ghostGroup.blocksRaycasts = false;
 
             var backing = ghost.AddComponent<Image>();
             backing.sprite = UiSpriteFactory.Rounded;
@@ -1510,37 +1770,163 @@ namespace TcgBattle.UI
                 Vector2.zero, size - new Vector2(10f, 10f));
             art.preserveAspect = true;
 
-            float koDrift = 46f * _k;
             SpawnRing(view.Root, new Color(0.94f, 0.45f, 0.42f, 0.85f), 40f, 0.34f);
-            yield return UiFx.Move(ghostRt, pos + new Vector2(0f, side == Side.Bot ? koDrift : -koDrift), 0.38f);
-            var c = Color.white;
+            SpawnFloatingLabel(slotRt != null ? slotRt : view.Root, "KNOCKOUT!", ColRed,
+                new Vector2(0f, 96f), new Vector2(360f, 84f), 38f, 0.82f);
+
+            float koDrift = 46f * _k;
+            Vector2 end = pos + new Vector2(0f, side == Side.Bot ? koDrift : -koDrift);
+            const float duration = 0.55f;
             float t = 0f;
-            while (t < 0.38f)
+            while (t < duration)
             {
+                if (epoch != _fxEpoch || ghostRt == null || art == null || backing == null)
+                {
+                    if (ghost != null)
+                        Destroy(ghost);
+                    yield break;
+                }
                 t += Time.unscaledDeltaTime;
-                float a = 1f - t / 0.38f;
-                art.color = c = new Color(1f, 1f, 1f, a);
+                float k = Mathf.Clamp01(t / duration);
+                float ease = Mathf.SmoothStep(0f, 1f, k);
+                ghostRt.anchoredPosition = Vector2.Lerp(pos, end, ease);
+                ghostRt.localScale = Vector3.Lerp(Vector3.one, Vector3.one * 0.78f, ease);
+                ghostRt.localRotation = Quaternion.Euler(0f, 0f,
+                    angle + (side == Side.Bot ? -8f : 8f) * ease);
+                float a = 1f - k;
+                art.color = new Color(1f, 1f, 1f, a);
                 backing.color = new Color(0.12f, 0.09f, 0.19f, a);
                 yield return null;
             }
-            Destroy(ghost);
+            if (ghost != null)
+                Destroy(ghost);
+        }
+
+        private void HandleEvolved(CardInstance oldCard, CardInstance newCard, Side side)
+        {
+            if (oldCard == null || newCard == null)
+                return;
+            var view = side == Side.Player ? playerActiveView : botActiveView;
+            if (view == null || view.Card == null)
+                return;
+
+            // Capture the old face now, before RefreshAll rebinds the slot. The
+            // authoritative card has already changed; this snapshot is visual only.
+            _pendingFormFx.Add(new PendingFormFx
+            {
+                Side = side,
+                NewCard = newCard,
+                OldVisual = view.CaptureVisual(),
+                Heading = "EVOLVED!",
+                Path = $"{oldCard.DisplayName.ToUpperInvariant()} \u2192 {newCard.DisplayName.ToUpperInvariant()}",
+            });
         }
 
         private void HandlePromoted(CardInstance card, Side side)
         {
+            // Evolution has its own form-change FX; do not also queue the generic
+            // bench/hand slot-in animation for the same card.
+            if (HasPendingFormFx(card))
+                return;
             if (side == Side.Player)
                 _pendingPromoPlayer = card;
             else
                 _pendingPromoBot = card;
         }
 
-        private void HandleTransformed(CardInstance card, Side side)
+        private void HandleTransformed(CardInstance card, string oldName, Side side)
         {
-            var view = side == Side.Player ? playerActiveView : botActiveView;
-            if (view == null || !ReferenceEquals(view.Card, card))
+            if (card == null)
                 return;
-            SpawnRing(view.Root, ColGoldBright, 36f, 0.34f);
-            StartCoroutine(UiFx.Punch(view.Root, 1.06f, 0.22f));
+            var view = side == Side.Player ? playerActiveView : botActiveView;
+            if (view == null || view.Card == null)
+                return;
+            _pendingFormFx.Add(new PendingFormFx
+            {
+                Side = side,
+                NewCard = card,
+                OldVisual = view.CaptureVisual(),
+                Heading = "TRANSFORMASI!",
+                Path = $"{(oldName ?? "PAK KARTA").ToUpperInvariant()} \u2192 {card.DisplayName.ToUpperInvariant()}",
+            });
+        }
+
+        private bool HasPendingFormFx(CardInstance card)
+        {
+            for (int i = 0; i < _pendingFormFx.Count; i++)
+                if (ReferenceEquals(_pendingFormFx[i].NewCard, card))
+                    return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Start the cosmetic form reveal after RefreshAll has rebound the active slot.
+        /// Only one FX may own a side at a time; a newer form change cancels the old one.
+        /// </summary>
+        private void StartPendingFormFx()
+        {
+            if (_pendingFormFx.Count == 0)
+                return;
+            if (formFxLayer == null)
+            {
+                _pendingFormFx.Clear();
+                return;
+            }
+
+            var pending = new List<PendingFormFx>(_pendingFormFx);
+            _pendingFormFx.Clear();
+            float k = _k > 0.01f ? _k : 1f;
+
+            foreach (var p in pending)
+            {
+                var target = p.Side == Side.Player ? playerActiveView : botActiveView;
+                if (target == null || target.Card == null || !ReferenceEquals(target.Card, p.NewCard))
+                    continue;
+
+                var newVisual = target.CaptureVisual();
+                var oldFx = p.Side == Side.Player ? formFxPlayer : formFxBot;
+                if (oldFx != null)
+                    oldFx.CancelImmediate();
+
+                var fx = CardFormFx.Play(formFxLayer, target, p.OldVisual, newVisual,
+                    p.Heading, p.Path, k, ColGoldBright, OnFormFxFinished);
+                if (p.Side == Side.Player)
+                    formFxPlayer = fx;
+                else
+                    formFxBot = fx;
+            }
+        }
+
+        private void OnFormFxFinished(CardFormFx fx)
+        {
+            if (formFxPlayer == fx)
+                formFxPlayer = null;
+            if (formFxBot == fx)
+                formFxBot = null;
+        }
+
+        /// <summary>Cancel every cosmetic form animation and restore its target alpha.</summary>
+        private void ClearFormFx()
+        {
+            if (formFxPlayer != null)
+            {
+                formFxPlayer.CancelImmediate();
+                formFxPlayer = null;
+            }
+            if (formFxBot != null)
+            {
+                formFxBot.CancelImmediate();
+                formFxBot = null;
+            }
+            _pendingFormFx.Clear();
+
+            if (formFxLayer != null)
+            {
+                var fxs = formFxLayer.GetComponentsInChildren<CardFormFx>(true);
+                for (int i = fxs.Length - 1; i >= 0; i--)
+                    if (fxs[i] != null)
+                        fxs[i].CancelImmediate();
+            }
         }
 
         private void HandleBenchPlay(CardInstance card, Side side)
@@ -1564,6 +1950,7 @@ namespace TcgBattle.UI
             var pips = side == Side.Player ? playerPips : botPips;
             int idx = Mathf.Clamp(points - 1, 0, pips.Length - 1);
             StartCoroutine(UiFx.Punch(pips[idx].rectTransform, 1.7f, 0.4f));
+            SpawnRing(pips[idx].rectTransform, side == Side.Player ? ColGoldBright : ColRed, 18f, 0.34f);
             SpawnScorePopup(pips[idx].rectTransform);
         }
 
@@ -1650,6 +2037,22 @@ namespace TcgBattle.UI
             _pendingPlayerDrawSet.Clear();
         }
 
+        /// <summary>
+        /// Tumbal Anak is consumed by BattleManager before the attack event. Remember
+        /// which side was protected so the zero-damage hit can show a clear block
+        /// response instead of a misleading "-0 HP" number.
+        /// </summary>
+        private void HandleSupportUsed(CardInstance card, Side side)
+        {
+            if (card == null || card.Support == null)
+                return;
+            if (card.Support.effect == TcgBattle.Data.SupportEffect.TumbalAnakHandPassive)
+            {
+                _shieldPending = true;
+                _shieldSide = side;
+            }
+        }
+
         /// <summary>Kucing Liar sniping a bench Mbok Sumi: one-shot destruction feedback.</summary>
         private void HandleSupportDestroyed(CardInstance card, Side side)
         {
@@ -1663,15 +2066,42 @@ namespace TcgBattle.UI
 
         private void AnimateSlotIn(CardView view, Vector2 fromOffset)
         {
-            if (view == null)
+            if (view == null || (battle != null && battle.Phase == Phase.GameOver))
                 return;
-            StartCoroutine(SlotInAnim(view.Root, fromOffset));
+
+            bool playerActive = view == playerActiveView;
+            bool botActive = view == botActiveView;
+            if (playerActive && _playerActiveSlotIn != null)
+            {
+                StopCoroutine(_playerActiveSlotIn);
+                _playerActiveSlotIn = null;
+                ResetCardTransform(view);
+            }
+            if (botActive && _botActiveSlotIn != null)
+            {
+                StopCoroutine(_botActiveSlotIn);
+                _botActiveSlotIn = null;
+                ResetCardTransform(view);
+            }
+
+            var routine = StartCoroutine(SlotInAnim(view, fromOffset, playerActive, botActive));
+            if (playerActive)
+                _playerActiveSlotIn = routine;
+            else if (botActive)
+                _botActiveSlotIn = routine;
         }
 
-        private IEnumerator SlotInAnim(RectTransform rt, Vector2 fromOffset)
+        private IEnumerator SlotInAnim(CardView view, Vector2 fromOffset, bool playerActive, bool botActive)
         {
+            var rt = view != null ? view.Root : null;
             if (rt == null)
+            {
+                if (playerActive)
+                    _playerActiveSlotIn = null;
+                if (botActive)
+                    _botActiveSlotIn = null;
                 yield break;
+            }
             // Board card views are always centred in their slot when at rest. Target
             // that invariant explicitly rather than capturing the live mid-flight
             // position (which could bake a previous shake offset into the new card).
@@ -1681,8 +2111,30 @@ namespace TcgBattle.UI
             yield return UiFx.Move(rt, to, 0.28f);
             // restore full size before the settle punch: UiFx.Punch returns to the scale
             // it started at (leaving 0.75 here made every promoted/benched card small).
+            if (rt == null)
+            {
+                if (playerActive)
+                    _playerActiveSlotIn = null;
+                if (botActive)
+                    _botActiveSlotIn = null;
+                yield break;
+            }
             rt.localScale = Vector3.one;
             yield return UiFx.Punch(rt, 1.08f, 0.22f);
+            // Highlight the new active only after the settle, so a KO ghost's
+            // "KNOCKOUT!" label and this "AKTIF!" label never overlap at one slot.
+            if ((playerActive || botActive) && view != null && view.Card != null &&
+                battle != null && battle.Phase != Phase.GameOver)
+            {
+                yield return new WaitForSecondsRealtime(0.08f);
+                SpawnRing(rt, ColGoldBright, 20f, 0.34f);
+                SpawnFloatingLabel(rt, "AKTIF!", ColGoldBright,
+                    new Vector2(0f, 110f), new Vector2(180f, 54f), 24f, 0.62f);
+            }
+            if (playerActive)
+                _playerActiveSlotIn = null;
+            if (botActive)
+                _botActiveSlotIn = null;
         }
 
         private void ShakeView(CardView view, string extraMessage)
@@ -1697,62 +2149,76 @@ namespace TcgBattle.UI
 
         private void SpawnDamagePopup(RectTransform anchor, string text, Color color, bool extra = false)
         {
-            var go = new GameObject("DmgPopup", typeof(RectTransform));
-            var rt = (RectTransform)go.transform;
-            rt.SetParent(safeRoot, false);
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = extra ? new Vector2(150f, 54f) * _k : new Vector2(300f, 76f) * _k;
-            rt.anchoredPosition = CanvasLocal(anchor) +
-                (extra ? new Vector2(104f, 118f) * _k : new Vector2(0f, 96f) * _k);
-
-            var chip = go.AddComponent<Image>();
-            chip.sprite = UiSpriteFactory.Rounded;
-            chip.type = Image.Type.Sliced;
-            chip.color = new Color(0.10f, 0.07f, 0.18f, 0.45f);
-            chip.raycastTarget = false;
-
-            var tmp = MakeText("Text", rt, (extra ? 30f : 44f) * _k, color, TextAlignmentOptions.Center, bold: true);
-            Stretch(tmp.rectTransform, 8, 4, 8, 4);
-            tmp.text = text;
-
-            StartCoroutine(PopupAnim(rt, extra));
+            SpawnFloatingLabel(anchor, text, color,
+                extra ? new Vector2(0f, 24f) : new Vector2(0f, 96f),
+                extra ? new Vector2(120f, 48f) : new Vector2(300f, 76f),
+                extra ? 28f : 44f, 0.9f, extra);
         }
 
         private void SpawnScorePopup(RectTransform pip)
         {
-            var go = new GameObject("ScorePopup", typeof(RectTransform));
+            SpawnFloatingLabel(pip, "+1", ColGoldBright,
+                new Vector2(70f, 56f), new Vector2(130f, 54f), 30f, 0.9f, true);
+        }
+
+        private void SpawnEnergyPopup(Side side, int delta)
+        {
+            var anchor = side == Side.Player ? playerStaminaRoot : botStaminaRoot;
+            if (anchor == null)
+                return;
+            SpawnFloatingLabel(anchor, $"+{delta} ENERGI", ColGoldBright,
+                new Vector2(-110f, 0f), new Vector2(190f, 48f), 22f, 0.8f, true);
+        }
+
+        /// <summary>
+        /// Shared floating chip used by damage, block, KO, score and energy feedback.
+        /// The object lives under the combat FX layer so it can be cleared atomically
+        /// on game over/restart and never intercepts input.
+        /// </summary>
+        private void SpawnFloatingLabel(RectTransform anchor, string text, Color color,
+            Vector2 offset, Vector2 size, float fontSize, float duration, bool small = false)
+        {
+            if (anchor == null)
+                return;
+            float k = _k > 0.01f ? _k : 1f;
+            var go = new GameObject("FloatLabel", typeof(RectTransform));
             var rt = (RectTransform)go.transform;
-            rt.SetParent(safeRoot, false);
+            rt.SetParent(FxParent, false);
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(130f, 54f) * _k;
-            rt.anchoredPosition = CanvasLocal(pip) + new Vector2(70f, 56f) * _k;
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = size * k;
+            rt.anchoredPosition = CanvasLocal(anchor) + offset * k;
 
             var chip = go.AddComponent<Image>();
             chip.sprite = UiSpriteFactory.Rounded;
             chip.type = Image.Type.Sliced;
-            chip.color = new Color(0.10f, 0.07f, 0.18f, 0.5f);
+            chip.color = new Color(0.10f, 0.07f, 0.18f, small ? 0.5f : 0.45f);
             chip.raycastTarget = false;
 
-            var tmp = MakeText("Text", rt, 30f * _k, ColGoldBright, TextAlignmentOptions.Center, bold: true);
+            var tmp = MakeText("Text", rt, fontSize * k, color, TextAlignmentOptions.Center, bold: true);
             Stretch(tmp.rectTransform, 8, 4, 8, 4);
-            tmp.text = "+1";
+            tmp.text = text;
 
-            StartCoroutine(PopupAnim(rt, true));
+            StartCoroutine(PopupAnim(rt, small, duration));
         }
 
-        private IEnumerator PopupAnim(RectTransform rt, bool small)
+        private IEnumerator PopupAnim(RectTransform rt, bool small, float duration)
         {
+            if (rt == null)
+                yield break;
             float t = 0f;
             var tmp = rt.GetComponentInChildren<TMP_Text>();
             var chip = rt.GetComponent<Image>();
             Vector2 start = rt.anchoredPosition;
-            Vector2 end = start + new Vector2(0f, small ? 56f : 84f);
+            Vector2 end = start + new Vector2(0f, small ? 56f : 84f) * _k;
             float startScale = small ? 0.82f : 0.72f;
             rt.localScale = Vector3.one * startScale;
-            while (t < 0.9f)
+            while (t < duration)
             {
+                if (rt == null)
+                    yield break;
                 t += Time.unscaledDeltaTime;
-                float k = Mathf.Clamp01(t / 0.9f);
+                float k = Mathf.Clamp01(t / duration);
                 rt.anchoredPosition = Vector2.Lerp(start, end, k);
                 // pop in quickly, then settle (the number lands with the hit)
                 float s = t < 0.12f
@@ -1766,7 +2232,8 @@ namespace TcgBattle.UI
                     tmp.color = WithA(tmp.color, a);
                 yield return null;
             }
-            Destroy(rt.gameObject);
+            if (rt != null)
+                Destroy(rt.gameObject);
         }
 
         // ================================================================== overlays
@@ -1838,7 +2305,11 @@ namespace TcgBattle.UI
                 StopCoroutine(turnBannerRoutine);
             turnBannerRoutine = StartCoroutine(TurnBannerAnim(side));
             if (turnPillBg != null)
+            {
                 StartCoroutine(UiFx.Punch(turnPillBg.rectTransform, 1.10f, 0.34f));
+                SpawnRing(turnPillBg.rectTransform,
+                    side == Side.Player ? ColGoldBright : ColRed, 12f, 0.34f);
+            }
 
             // Launch the bot's turn driver.
             if (side == Side.Bot && bot != null)
@@ -1855,7 +2326,7 @@ namespace TcgBattle.UI
                 yield break;
             bool mine = side == Side.Player;
             statusPill.color = mine ? ColGoldBright : ColMaroon;
-            statusText.text = mine ? "GILIRANMU" : "GILIRAN BOT";
+            statusText.text = mine ? "GILIRANMU!" : "GILIRAN LAWAN!";
             statusText.color = mine ? ColInk : ColIvory;
             yield return UiFx.Punch(statusPill.rectTransform, 1.07f, 0.3f);
             yield return new WaitForSecondsRealtime(0.9f);
@@ -1871,18 +2342,33 @@ namespace TcgBattle.UI
         {
             if (overOverlay == null)
                 return;
-            // Never leave a face-down ghost, transformation modal, or invisible hand
-            // card behind the result.
-            CloseTransformOverlayImmediate();
-            FinishDrawAnimations();
-            if (turnBannerRoutine != null)
+
+            // Stop every cosmetic routine first. The result screen must never be
+            // overwritten by a late lunge, KO ghost, damage chip, turn banner or energy
+            // pop that was already in flight when the manager reached GameOver.
+            StopAllCoroutines();
+            ResetHudTransforms();
+            if (statusPill != null)
+                statusPill.color = ColIvory;
+            if (statusText != null)
             {
-                StopCoroutine(turnBannerRoutine);
-                turnBannerRoutine = null;
+                statusText.color = ColInk;
+                statusText.text = statusBaseline;
             }
+            turnBannerRoutine = null;
+            transformFade = null;
+            _combatBusy = false;
+            ClearCombatFx();
+            ClearFormFx();
+            FinishDrawAnimations();
+            _pendingPromoPlayer = _pendingPromoBot = null;
+            _pendingBenchPlayer = _pendingBenchBot = null;
+            _pendingRetreatPlayer = _pendingRetreatBot = null;
+            CloseTransformOverlayImmediate();
             if (hand != null)
                 hand.HideInspectPreview();   // inspection preview never outlives the battle
             _inspectSourceView = null;       // board-sourced previews: forget the source slot too
+
             overOverlay.transform.SetAsLastSibling(); // result modal must sit above the board, HUD and hand
             overOverlay.SetActive(true);
             if (overGroup != null)
@@ -1892,12 +2378,34 @@ namespace TcgBattle.UI
             }
             if (overRibbonRt != null)
                 StartCoroutine(UiFx.Punch(overRibbonRt, 1.04f, 0.32f));
+            if (overText != null)
+                StartCoroutine(UiFx.Punch(overText.rectTransform, 1.06f, 0.34f));
+
             bool playerWins = winner == Side.Player;
-            overText.text = playerWins ? "KAMU MENANG!" : "BOT MENANG!";
+            if (overText != null)
+            {
+                overText.text = playerWins ? "KEMENANGAN!" : "KEKALAHAN!";
+                overText.color = playerWins ? ColInk : ColIvory;
+            }
+            var ribbon = overRibbonRt != null ? overRibbonRt.GetComponent<Image>() : null;
+            if (ribbon != null)
+                ribbon.color = playerWins ? ColGoldBright : ColMaroon;
             var accent = playerWins ? ColGoldBright : ColRed;
-            overDiamondL.color = accent;
-            overDiamondR.color = accent;
-            overScoreText.text = $"Skor akhir  {battle.Player.Points} - {battle.Bot.Points}";
+            if (overDiamondL != null)
+                overDiamondL.color = accent;
+            if (overDiamondR != null)
+                overDiamondR.color = accent;
+            if (overScoreText != null)
+            {
+                overScoreText.color = playerWins ? ColGoldBright : ColIvory;
+                overScoreText.text = battle != null
+                    ? $"Skor akhir  {battle.Player.Points} - {battle.Bot.Points}"
+                    : "Skor akhir";
+            }
+
+            _restarting = false;
+            if (againBtn != null)
+                againBtn.interactable = true;
         }
 
         /// <summary>Soft fade-in for the result overlay (board is already authoritative).</summary>
@@ -1917,6 +2425,175 @@ namespace TcgBattle.UI
         }
 
         // ================================================================== helpers
+
+        private Transform FxParent => combatFxLayer != null ? combatFxLayer : safeRoot;
+
+        private static Color ElementColor(TcgBattle.Data.Element element)
+        {
+            return element == TcgBattle.Data.Element.Fire
+                ? Hex(0xF08A3C)
+                : Hex(0xA879E8);
+        }
+
+        /// <summary>
+        /// Board-card input ownership for the short combat presentation. The CanvasGroup
+        /// is restored after the effect (or by ClearCombatFx on game over/restart), so a
+        /// card can never stay unclickable or keep intercepting inspection clicks.
+        /// </summary>
+        private static void SetCardInput(CardView view, bool enabled)
+        {
+            if (view == null || view.Root == null)
+                return;
+            var group = view.Root.GetComponent<CanvasGroup>();
+            if (group == null)
+                group = view.Root.gameObject.AddComponent<CanvasGroup>();
+            group.blocksRaycasts = enabled;
+            group.interactable = enabled;
+        }
+
+        private static void ResetCardTransform(CardView view)
+        {
+            if (view == null || view.Root == null)
+                return;
+            view.Root.anchoredPosition = Vector2.zero;
+            view.Root.localRotation = Quaternion.identity;
+            view.Root.localScale = Vector3.one;
+        }
+
+        private void ResetBoardCardTransforms()
+        {
+            ResetCardTransform(playerActiveView);
+            ResetCardTransform(botActiveView);
+            if (playerBenchViews != null)
+                for (int i = 0; i < playerBenchViews.Length; i++)
+                    ResetCardTransform(playerBenchViews[i]);
+            if (botBenchViews != null)
+                for (int i = 0; i < botBenchViews.Length; i++)
+                    ResetCardTransform(botBenchViews[i]);
+        }
+
+        private void SetBoardCardInput(bool enabled)
+        {
+            SetCardInput(playerActiveView, enabled);
+            SetCardInput(botActiveView, enabled);
+            if (playerBenchViews != null)
+                for (int i = 0; i < playerBenchViews.Length; i++)
+                    SetCardInput(playerBenchViews[i], enabled);
+            if (botBenchViews != null)
+                for (int i = 0; i < botBenchViews.Length; i++)
+                    SetCardInput(botBenchViews[i], enabled);
+        }
+
+        private void SetHandInput(bool enabled)
+        {
+            if (hand == null)
+                return;
+            var group = hand.GetComponent<CanvasGroup>();
+            if (group == null)
+                group = hand.gameObject.AddComponent<CanvasGroup>();
+            group.blocksRaycasts = enabled;
+            group.interactable = enabled;
+        }
+
+        /// <summary>
+        /// Snap every persistent HUD transform owned by a transient punch back to rest.
+        /// StopAllCoroutines can abort UiFx.Punch between its first and last frame, and
+        /// Punch restores the scale it captured, so an aborted punch would otherwise
+        /// leave score pips, stamina badges or the result ribbon oversized on the end
+        /// screen and into the next match. All of these elements have a scale-1 rest
+        /// pose, so this never overwrites a layout pose.
+        /// </summary>
+        private void ResetHudTransforms()
+        {
+            ResetScale(turnPillBg != null ? turnPillBg.rectTransform : null);
+            ResetScale(statusPill != null ? statusPill.rectTransform : null);
+            ResetScale(playerStaminaRoot);
+            ResetScale(botStaminaRoot);
+            if (playerPips != null)
+                for (int i = 0; i < playerPips.Length; i++)
+                    ResetScale(playerPips[i] != null ? playerPips[i].rectTransform : null);
+            if (botPips != null)
+                for (int i = 0; i < botPips.Length; i++)
+                    ResetScale(botPips[i] != null ? botPips[i].rectTransform : null);
+            ResetScale(overRibbonRt);
+            ResetScale(overText != null ? overText.rectTransform : null);
+            ResetScale(coinImage != null ? coinImage.rectTransform : null);
+            ResetScale(coinRing != null ? coinRing.rectTransform : null);
+            ResetScale(coinText != null ? coinText.rectTransform : null);
+        }
+
+        private static void ResetScale(RectTransform rt)
+        {
+            if (rt != null)
+                rt.localScale = Vector3.one;
+        }
+
+        /// <summary>
+        /// Atomically cancel transient combat visuals and restore every board transform
+        /// and raycast flag. Called on game over, unbind, restart and teardown.
+        /// </summary>
+        private void ClearCombatFx()
+        {
+            _fxEpoch++;
+            _combatBusy = false;
+            _attackRoutine = null;
+            _playerActiveSlotIn = null;
+            _botActiveSlotIn = null;
+            _shieldPending = false;
+
+            if (combatFxLayer != null)
+            {
+                for (int i = combatFxLayer.childCount - 1; i >= 0; i--)
+                {
+                    var child = combatFxLayer.GetChild(i);
+                    if (child == null)
+                        continue;
+                    child.gameObject.SetActive(false);
+                    Destroy(child.gameObject);
+                }
+            }
+
+            ResetBoardCardTransforms();
+            SetBoardCardInput(true);
+            SetHandInput(true);
+        }
+
+        private void CancelFormFxForSide(Side side)
+        {
+            if (side == Side.Player && formFxPlayer != null)
+            {
+                formFxPlayer.CancelImmediate();
+                formFxPlayer = null;
+            }
+            if (side == Side.Bot && formFxBot != null)
+            {
+                formFxBot.CancelImmediate();
+                formFxBot = null;
+            }
+            _pendingFormFx.RemoveAll(p => p.Side == side);
+        }
+
+        private void CancelActiveSlotIn(Side side)
+        {
+            if (side == Side.Player)
+            {
+                if (_playerActiveSlotIn != null)
+                {
+                    StopCoroutine(_playerActiveSlotIn);
+                    _playerActiveSlotIn = null;
+                }
+                ResetCardTransform(playerActiveView);
+            }
+            else
+            {
+                if (_botActiveSlotIn != null)
+                {
+                    StopCoroutine(_botActiveSlotIn);
+                    _botActiveSlotIn = null;
+                }
+                ResetCardTransform(botActiveView);
+            }
+        }
 
         private CardView FindBoardView(CardInstance card)
         {
@@ -2140,6 +2817,8 @@ namespace TcgBattle.UI
         /// </summary>
         private void OnBoardHovered(CardView view, bool entered)
         {
+            if (_combatBusy)
+                return;
             if (entered)
             {
                 if (view.Card == null || view.Card.FaceDown)
