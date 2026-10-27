@@ -92,9 +92,15 @@ namespace TcgBattle
 
         private static void EnsureEventSystem()
         {
-            if (FindObjectOfType<EventSystem>() != null)
+            var existing = FindObjectOfType<EventSystem>();
+            if (existing != null)
+            {
+                if (existing.pixelDragThreshold > 6)
+                    existing.pixelDragThreshold = 6;
                 return;
+            }
             var go = new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+            go.GetComponent<EventSystem>().pixelDragThreshold = 6;
             DontDestroyOnLoad(go);
         }
     }

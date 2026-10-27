@@ -29,12 +29,19 @@ namespace TcgBattle.UI
         public Color FrameColor;
         public Color DimColor;
         public Color SupportChipColor;
+        public Color SupportTextColor;
+        public Color SupportRingColor;
+        public Color StageRingColor;
+        public Color BottomAccentColor;
+        public Color ElementRingColor;
         public bool ShowArt;
         public bool ShowStrip;
         public bool ShowCost;
         public bool ShowElement;
         public bool ShowSupport;
         public bool ShowFrame;
+        public bool ShowStageRing;
+        public bool ShowBottomAccent;
     }
 
     /// <summary>
@@ -56,19 +63,23 @@ namespace TcgBattle.UI
 
         private RectTransform _root;
         private Image _backing;
-        private Image _frame;          // gold ring on actives, faint ivory on the bench
+        private Image _frame;          // gold ring on actives, faint ivory on the bench/hand
         private Image _selectedFrame;  // bright ring for selection feedback
         private Image _eligibleFrame;  // soft ring for "legal pick" cards (setup)
         private Image _targetFrame;    // action-target ring (attack / retreat affordance)
+        private Image _stageRing;      // second inner ring for evolution-stage cards
+        private Image _bottomAccent;   // element/support color line in the UI backing
         private Image _art;
         private Image _dim;
         private Image _elementChip;
+        private Image _elementRing;
         private Image _elementIcon;
         private Image _hpBg;
         private Image _hpFill;
         private Image _costChip;
         private Image _costRing;
         private Image _supportChip;
+        private Image _supportRing;
         private TMP_Text _hpText;
         private TMP_Text _costText;
         private TMP_Text _supportText;
@@ -76,7 +87,7 @@ namespace TcgBattle.UI
         private bool _hpTweening;
         private Coroutine _hpTween;
         private bool _hovered;
-        private Color _frameDefault = ColFrameIvory;   // per-mode base frame color, set by Bind
+        private Color _frameDefault = Color.clear;   // hover-only outline, transparent at rest
 
         // current global layout scale (1 = the 1080x1920 reference composition)
         public static float GlobalScale = 1f;
@@ -84,18 +95,6 @@ namespace TcgBattle.UI
         private List<ScaledItem> _scaled;   // captured lazily on first ApplyScale
 
         public RectTransform Root => _root;
-
-        // palette (kept in sync with BattleUI)
-        private static readonly Color ColBacking = Hex(0x1E1730);
-        private static readonly Color ColBackingSupport = Hex(0x2A2148);
-        private static readonly Color ColFrameGold = new Color(0xD9 / 255f, 0xA8 / 255f, 0x43 / 255f, 0.95f);
-        private static readonly Color ColFrameIvory = new Color(0xF2 / 255f, 0xEA / 255f, 0xDA / 255f, 0.32f);
-        private static readonly Color ColHpFull = Hex(0x6FA867);
-        private static readonly Color ColHpMid = Hex(0xD9A843);
-        private static readonly Color ColHpLow = Hex(0xC0504E);
-        private static readonly Color ColIvory = Hex(0xF2EADA);
-        private static readonly Color ColInk = Hex(0x241B36);
-        private static readonly Color ColFrameHover = new Color(0.93f, 0.78f, 0.42f, 0.80f); // soft warm gold
 
         public static CardView Create(Transform parent, Vector2 size, string name = "Card")
         {
@@ -115,40 +114,63 @@ namespace TcgBattle.UI
             _root = (RectTransform)transform;
 
             // shadow first: it must sit behind the frame/target rings, not over them
-            var shadow = MakeImage("Shadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.5f));
+            var shadow = MakeImage("Shadow", UiSpriteFactory.SoftShadow, UiStyle.CardShadow);
             Stretch(shadow.rectTransform, -26, -26, -26, -26); // symmetric halo around the card
 
             _selectedFrame = MakeImage("SelectedFrame", UiSpriteFactory.RoundOutline,
-                new Color(1f, 0.86f, 0.45f, 1f));
+                UiStyle.SelectedFrame);
             _selectedFrame.type = Image.Type.Sliced;
-            Stretch(_selectedFrame.rectTransform, -11, -11, -11, -11);
+            Stretch(_selectedFrame.rectTransform, -6, -6, -6, -6);
             _selectedFrame.gameObject.SetActive(false);
 
             _eligibleFrame = MakeImage("EligibleFrame", UiSpriteFactory.RoundOutline,
-                new Color(0.95f, 0.80f, 0.45f, 0.75f));
+                UiStyle.EligibleFrame);
             _eligibleFrame.type = Image.Type.Sliced;
-            Stretch(_eligibleFrame.rectTransform, -7, -7, -7, -7);
+            Stretch(_eligibleFrame.rectTransform, -5, -5, -5, -5);
             _eligibleFrame.gameObject.SetActive(false);
 
             _targetFrame = MakeImage("TargetFrame", UiSpriteFactory.RoundOutline,
-                new Color(0.94f, 0.52f, 0.46f, 0.78f));
+                UiStyle.TargetHarmful);
             _targetFrame.type = Image.Type.Sliced;
-            Stretch(_targetFrame.rectTransform, -13, -13, -13, -13);
+            Stretch(_targetFrame.rectTransform, -8, -8, -8, -8);
             _targetFrame.gameObject.SetActive(false);
 
-            _frame = MakeImage("Frame", UiSpriteFactory.RoundOutline, ColFrameIvory);
+            // The supplied card PNG already carries its own printed border. This ring is
+            // only a hover outline just outside the art (invisible at rest); the heavier
+            // selection/eligible/target rings are the interaction states.
+            _frame = MakeImage("HoverOutline", UiSpriteFactory.RoundOutline, Color.clear);
             _frame.type = Image.Type.Sliced;
-            Stretch(_frame.rectTransform, 1, 1, 1, 1);
+            Stretch(_frame.rectTransform, -2, -2, -2, -2);
 
-            _backing = MakeImage("Backing", UiSpriteFactory.Rounded, ColBacking);
+            _backing = MakeImage("Backing", UiSpriteFactory.Rounded, UiStyle.CardBacking);
             _backing.type = Image.Type.Sliced;
             Stretch(_backing.rectTransform, 0, 0, 0, 0);
             _backing.raycastTarget = true; // the click target of the whole card
 
+            // Evolution-stage halo outside the printed frame, never over the art.
+            _stageRing = MakeImage("StageRing", UiSpriteFactory.RoundOutline, UiStyle.StageRing1);
+            _stageRing.type = Image.Type.Sliced;
+            Stretch(_stageRing.rectTransform, -4, -4, -4, -4);
+            _stageRing.gameObject.SetActive(false);
+
+            // The card PNG is the complete face (border, name, printed stats, effect text).
+            // Render it across the whole slot; only preserveAspect may leave a few pixels
+            // of dark backing at the sides because slot and card aspects differ slightly.
             _art = MakeImage("Art", null, Color.white);
             _art.preserveAspect = true;
-            Stretch(_art.rectTransform, 6, 6, 6, 48);
+            Stretch(_art.rectTransform, 0, 0, 0, 0);
             _art.raycastTarget = true;
+
+            // Kept for snapshot compatibility with form-change FX; the printed artwork
+            // already carries the element/support colour language.
+            _bottomAccent = MakeImage("BottomAccent", null, UiStyle.Gold);
+            var accentRt = _bottomAccent.rectTransform;
+            accentRt.anchorMin = new Vector2(0f, 0f);
+            accentRt.anchorMax = new Vector2(1f, 0f);
+            accentRt.pivot = new Vector2(0.5f, 0f);
+            accentRt.offsetMin = new Vector2(8f, 3f);
+            accentRt.offsetMax = new Vector2(-8f, 5f);
+            _bottomAccent.gameObject.SetActive(false);
 
             // ---- info strip (bottom): element icon + live HP ----
             var strip = new GameObject("InfoStrip", typeof(RectTransform));
@@ -157,36 +179,46 @@ namespace TcgBattle.UI
             stripRt.anchorMin = new Vector2(0f, 0f);
             stripRt.anchorMax = new Vector2(1f, 0f);
             stripRt.pivot = new Vector2(0.5f, 0f);
-            stripRt.offsetMin = new Vector2(6f, 6f);
-            stripRt.offsetMax = new Vector2(-6f, 46f);
+            stripRt.offsetMin = new Vector2(5f, 3f);
+            stripRt.offsetMax = new Vector2(-5f, 27f);
 
-            _elementChip = MakeImage("ElementChip", UiSpriteFactory.Circle, ColIvory);
+            var stripBacking = MakeImage("StripBacking", UiSpriteFactory.Rounded, UiStyle.StripBacking);
+            stripBacking.type = Image.Type.Sliced;
+            stripBacking.rectTransform.SetParent(strip.transform, false);
+            Stretch(stripBacking.rectTransform, 0, 0, 0, 0);
+
+            _elementChip = MakeImage("ElementChip", UiSpriteFactory.Circle, UiStyle.Ivory);
             _elementChip.transform.SetParent(strip.transform, false);
             var chipRt = _elementChip.rectTransform;
-            chipRt.sizeDelta = new Vector2(34, 34);
+            chipRt.sizeDelta = new Vector2(20, 20);
             chipRt.anchorMin = new Vector2(0, 0.5f);
             chipRt.anchorMax = new Vector2(0, 0.5f);
-            chipRt.anchoredPosition = new Vector2(23, 0);
+            chipRt.anchoredPosition = new Vector2(15, 0);
+
+            _elementRing = MakeImage("ElementRing", UiSpriteFactory.Ring, UiStyle.Dark);
+            var elRingRt = _elementRing.rectTransform;
+            elRingRt.SetParent(_elementChip.rectTransform, false);
+            Stretch(elRingRt, -2, -2, -2, -2);
 
             _elementIcon = MakeImage("ElementIcon", null, Color.white);
             var elRt = _elementIcon.rectTransform;
             elRt.SetParent(strip.transform, false);
-            elRt.sizeDelta = new Vector2(27, 27);
+            elRt.sizeDelta = new Vector2(17, 17);
             elRt.anchorMin = new Vector2(0, 0.5f);
             elRt.anchorMax = new Vector2(0, 0.5f);
-            elRt.anchoredPosition = new Vector2(23, 0);
+            elRt.anchoredPosition = new Vector2(15, 0);
 
-            _hpBg = MakeImage("HpBg", UiSpriteFactory.Rounded, new Color(0f, 0f, 0f, 0.55f));
+            _hpBg = MakeImage("HpBg", UiSpriteFactory.Rounded, UiStyle.HpTrack);
             _hpBg.type = Image.Type.Sliced;
             var bgRt = _hpBg.rectTransform;
             bgRt.SetParent(strip.transform, false);
             bgRt.anchorMin = new Vector2(0, 0.5f);
             bgRt.anchorMax = new Vector2(1, 0.5f);
-            // bar is 30 units tall, vertically centred on the strip line
-            bgRt.offsetMin = new Vector2(47, -15f);
-            bgRt.offsetMax = new Vector2(-4, 15f);
+            // slim bar, vertically centred on the strip line, clear of the tiny element orb
+            bgRt.offsetMin = new Vector2(29, -8f);
+            bgRt.offsetMax = new Vector2(-4, 8f);
 
-            _hpFill = MakeImage("HpFill", UiSpriteFactory.Rounded, ColHpFull);
+            _hpFill = MakeImage("HpFill", UiSpriteFactory.Rounded, UiStyle.HpFull);
             _hpFill.type = Image.Type.Sliced;
             var fillRt = _hpFill.rectTransform;
             fillRt.SetParent(bgRt.transform, false);
@@ -196,33 +228,48 @@ namespace TcgBattle.UI
             _hpFill.fillOrigin = (int)Image.OriginHorizontal.Left;
             _hpFill.fillAmount = 1f;
 
-            _hpText = MakeText("HpText", bgRt, 22, Color.white, TextAlignmentOptions.Center, bold: true);
+            var hpOutline = MakeImage("HpOutline", UiSpriteFactory.RoundOutline, UiStyle.HpOutline);
+            hpOutline.type = Image.Type.Sliced;
+            hpOutline.rectTransform.SetParent(bgRt.transform, false);
+            Stretch(hpOutline.rectTransform, 0, 0, 0, 0);
+
+            _hpText = MakeText("HpText", bgRt, 13, UiStyle.HpText, TextAlignmentOptions.Center, bold: true);
             Stretch(_hpText.rectTransform, 2, 0, 2, 0);
 
-            // ---- attack energy cost chip (top-left) ----
-            _costChip = MakeImage("CostChip", UiSpriteFactory.Circle, ColHpMid);
+            // ---- attack energy cost chip, over the printed empty cost orb (bottom-left) ----
+            _costChip = MakeImage("CostChip", UiSpriteFactory.Circle, UiStyle.Gold);
             var costRt = _costChip.rectTransform;
-            costRt.anchorMin = new Vector2(0, 1);
-            costRt.anchorMax = new Vector2(0, 1);
-            costRt.anchoredPosition = new Vector2(19, -19);
-            costRt.sizeDelta = new Vector2(38, 38);
+            costRt.anchorMin = new Vector2(0.13f, 0.30f);
+            costRt.anchorMax = new Vector2(0.13f, 0.30f);
+            costRt.anchoredPosition = Vector2.zero;
+            costRt.sizeDelta = new Vector2(26, 26);
             _costRing = MakeImage("CostRing", UiSpriteFactory.Ring, new Color(0f, 0f, 0f, 0.45f));
             var ringRt = _costRing.rectTransform;
             ringRt.SetParent(costRt.transform, false);
             Stretch(ringRt, -2, -2, -2, -2);
 
-            _costText = MakeText("CostText", costRt, 21, Hex(0x3A2506), TextAlignmentOptions.Center, bold: true);
+            _costText = MakeText("CostText", costRt, UiStyle.CardCost, UiStyle.InkOnGold,
+                TextAlignmentOptions.Center, bold: true);
             Stretch(_costText.rectTransform, 0, 0, 0, 0);
 
-            // ---- support tag (top-right) ----
-            _supportChip = MakeImage("SupportChip", UiSpriteFactory.Rounded, new Color(0.14f, 0.11f, 0.21f, 0.92f));
+            // ---- support tag: small footer, flush with the printed bottom border ----
+            _supportChip = MakeImage("SupportChip", UiSpriteFactory.Rounded, UiStyle.SupportChip);
             _supportChip.type = Image.Type.Sliced;
             var supRt = _supportChip.rectTransform;
-            supRt.anchorMin = new Vector2(1, 1);
-            supRt.anchorMax = new Vector2(1, 1);
-            supRt.anchoredPosition = new Vector2(-37, -15);
-            supRt.sizeDelta = new Vector2(64, 26);
-            _supportText = MakeText("SupportText", supRt, 15, ColIvory, TextAlignmentOptions.Center, bold: true);
+            supRt.anchorMin = new Vector2(0.5f, 0f);
+            supRt.anchorMax = new Vector2(0.5f, 0f);
+            supRt.pivot = new Vector2(0.5f, 0f);
+            supRt.anchoredPosition = new Vector2(0f, 4f);
+            supRt.sizeDelta = new Vector2(74f, 18f);
+
+            _supportRing = MakeImage("SupportRing", UiSpriteFactory.RoundOutline,
+                UiStyle.SupportChipRing);
+            _supportRing.type = Image.Type.Sliced;
+            _supportRing.rectTransform.SetParent(supRt, false);
+            Stretch(_supportRing.rectTransform, -1, -1, -1, -1);
+
+            _supportText = MakeText("SupportText", supRt, UiStyle.CardChip, UiStyle.Ivory,
+                TextAlignmentOptions.Center, bold: true);
             _supportText.text = "PASIF";
             Stretch(_supportText.rectTransform, 0, 0, 0, 0);
 
@@ -260,6 +307,7 @@ namespace TcgBattle.UI
             bool isBattle = card.IsBattle;
             bool isBoard = mode == CardDisplayMode.Active || mode == CardDisplayMode.Bench;
             bool showStrip = isBoard && isBattle;
+            int stage = isBattle ? UiStyle.EvolutionStage(card.CardId) : 0;
 
             _art.sprite = ArtLibrary.GetCardArt(card.ArtResource);
             _art.gameObject.SetActive(true);
@@ -267,24 +315,42 @@ namespace TcgBattle.UI
             _elementIcon.sprite = ArtLibrary.GetElement(card.Element);
             _elementIcon.gameObject.SetActive(showStrip);
             _elementChip.gameObject.SetActive(showStrip);
+            _elementRing.color = UiStyle.WithAlpha(UiStyle.ElementAccent(card.Element), 0.70f);
 
             _costChip.gameObject.SetActive(isBattle && mode != CardDisplayMode.Hidden);
             if (isBattle)
                 _costText.text = card.AttackCost.ToString();
 
-            _supportChip.gameObject.SetActive(card.IsSupport);
-            _backing.color = card.IsSupport ? ColBackingSupport : ColBacking;
+            _supportChip.gameObject.SetActive(card.IsSupport && mode != CardDisplayMode.Hidden);
+            if (card.IsSupport)
+            {
+                _supportText.text = UiStyle.TypeLabel(card);
+                _supportChip.color = UiStyle.SupportChipColor(card);
+                _supportRing.color = UiStyle.SupportRingColor(card);
+                _supportText.color = UiStyle.SupportTextColor(card);
+            }
+            _backing.color = card.IsSupport ? UiStyle.CardBackingSupport : UiStyle.CardBacking;
 
-            // mode frame: bright gold for the focal active, faint ivory on the bench/hand
-            _frame.gameObject.SetActive(isBoard);
-            _frameDefault = mode == CardDisplayMode.Active ? ColFrameGold : ColFrameIvory;
+            // The printed card face owns its border/color. Keep the old frame image as the
+            // hover-only outer outline (clear at rest) and the stage halo outside the art.
+            _frame.gameObject.SetActive(mode != CardDisplayMode.Hidden);
+            _frameDefault = Color.clear;
             _frame.color = _frameDefault;
+
+            _stageRing.gameObject.SetActive(stage > 0 && mode != CardDisplayMode.Hidden);
+            _stageRing.color = UiStyle.StageRingColor(stage);
+
+            // Decorative in-card accent is redundant with the printed batik border.
+            _bottomAccent.gameObject.SetActive(false);
+
             // Info strip: shown only for battle cards on the board.
             var strip = _hpBg.transform.parent.gameObject;
             strip.SetActive(showStrip);
             if (showStrip)
             {
-                _hpText.fontSize = (mode == CardDisplayMode.Active ? 24f : 20f) * GlobalScale;
+                _hpText.fontSize = (mode == CardDisplayMode.Active
+                    ? UiStyle.CardHpActive
+                    : UiStyle.CardHpBench) * GlobalScale;
                 SetHpDisplay(card.CurrentHp, card.MaxHp);
             }
 
@@ -316,12 +382,19 @@ namespace TcgBattle.UI
                 FrameColor = _frame.color,
                 DimColor = _dim.color,
                 SupportChipColor = _supportChip.color,
+                SupportTextColor = _supportText.color,
+                SupportRingColor = _supportRing.color,
+                StageRingColor = _stageRing.color,
+                BottomAccentColor = _bottomAccent.color,
+                ElementRingColor = _elementRing.color,
                 ShowArt = _art.gameObject.activeSelf,
                 ShowStrip = _hpBg.transform.parent.gameObject.activeSelf,
                 ShowCost = _costChip.gameObject.activeSelf,
                 ShowElement = _elementChip.gameObject.activeSelf,
                 ShowSupport = _supportChip.gameObject.activeSelf,
                 ShowFrame = _frame.gameObject.activeSelf,
+                ShowStageRing = _stageRing.gameObject.activeSelf,
+                ShowBottomAccent = _bottomAccent.gameObject.activeSelf,
             };
         }
 
@@ -346,11 +419,18 @@ namespace TcgBattle.UI
             _costText.text = visual.CostText;
             _supportChip.gameObject.SetActive(visual.ShowSupport);
             _supportChip.color = visual.SupportChipColor;
+            _supportRing.color = visual.SupportRingColor;
             _supportText.text = visual.SupportText;
+            _supportText.color = visual.SupportTextColor;
             _backing.color = visual.BackingColor;
             _frame.gameObject.SetActive(visual.ShowFrame);
             _frame.color = visual.FrameColor;
             _frameDefault = visual.FrameColor;
+            _stageRing.gameObject.SetActive(visual.ShowStageRing);
+            _stageRing.color = visual.StageRingColor;
+            _bottomAccent.gameObject.SetActive(visual.ShowBottomAccent);
+            _bottomAccent.color = visual.BottomAccentColor;
+            _elementRing.color = visual.ElementRingColor;
             _dim.color = visual.DimColor;
 
             var strip = _hpBg.transform.parent.gameObject;
@@ -402,8 +482,8 @@ namespace TcgBattle.UI
             float pct = Mathf.Clamp01((float)current / max);
             _hpFill.fillAmount = pct;
             _shownHpPct = pct;
-            _hpText.text = $"{current}/{max}";
-            _hpFill.color = HpColor(pct);
+            _hpText.text = UiStyle.HpLabel(current, max, true);
+            _hpFill.color = UiStyle.HpColor(pct);
         }
 
         /// <summary>
@@ -444,26 +524,20 @@ namespace TcgBattle.UI
                 float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(t / duration));
                 float pct = Mathf.Lerp(from, to, k);
                 _hpFill.fillAmount = pct;
-                _hpFill.color = HpColor(pct);
-                _hpText.text = $"{Mathf.RoundToInt(Mathf.Lerp(fromHp, current, k))}/{max}";
+                _hpFill.color = UiStyle.HpColor(pct);
+                _hpText.text = UiStyle.HpLabel(
+                    Mathf.RoundToInt(Mathf.Lerp(fromHp, current, k)), max, true);
                 yield return null;
             }
             if (_hpFill != null)
             {
                 _hpFill.fillAmount = to;
-                _hpFill.color = HpColor(to);
-                _hpText.text = $"{current}/{max}";
+                _hpFill.color = UiStyle.HpColor(to);
+                _hpText.text = UiStyle.HpLabel(current, max, true);
                 _shownHpPct = to;
             }
             _hpTweening = false;
             _hpTween = null;
-        }
-
-        private static Color HpColor(float pct)
-        {
-            return pct > 0.5f
-                ? Color.Lerp(ColHpMid, ColHpFull, (pct - 0.5f) / 0.5f)
-                : Color.Lerp(ColHpLow, ColHpMid, pct / 0.5f);
         }
 
         public void SetSelected(bool selected)
@@ -492,8 +566,8 @@ namespace TcgBattle.UI
             _targetFrame.gameObject.SetActive(targeted);
             if (targeted)
                 _targetFrame.color = harmful
-                    ? new Color(0.94f, 0.52f, 0.46f, 0.78f)
-                    : new Color(0.95f, 0.80f, 0.45f, 0.70f);
+                    ? UiStyle.TargetHarmful
+                    : UiStyle.TargetHelpful;
         }
 
         /// <summary>Whether the card is currently hover-highlighted.</summary>
@@ -508,7 +582,7 @@ namespace TcgBattle.UI
         {
             _hovered = hovered;
             if (_frame != null)
-                _frame.color = hovered ? ColFrameHover : _frameDefault;
+                _frame.color = hovered ? UiStyle.HoverFrame : _frameDefault;
         }
 
         public void OnPointerEnter(PointerEventData eventData)
@@ -572,11 +646,6 @@ namespace TcgBattle.UI
             rt.anchorMax = Vector2.one;
             rt.offsetMin = new Vector2(left, bottom);
             rt.offsetMax = new Vector2(-right, -top);
-        }
-
-        private static Color Hex(int rgba)
-        {
-            return new Color32((byte)(rgba >> 16 & 0xFF), (byte)(rgba >> 8 & 0xFF), (byte)(rgba & 0xFF), 0xFF);
         }
     }
 }

@@ -14,6 +14,9 @@ namespace TcgBattle.UI
         private static Sprite _rounded;
         private static Sprite _circle;
         private static Sprite _softShadow;
+        private static Sprite _softGlow;
+        private static Sprite _fadeDown;
+        private static Sprite _fadeUp;
         private static Sprite _roundOutline;
         private static Sprite _ring;
         private static Sprite _diamond;
@@ -80,6 +83,43 @@ namespace TcgBattle.UI
                 if (_softShadow == null)
                     _softShadow = CreateSoftCircle(64);
                 return _softShadow;
+            }
+        }
+
+        /// <summary>
+        /// White radial falloff, tintable for stage pools, divider glows and other
+        /// low-contrast atmosphere. Unlike SoftShadow (black RGB), this keeps the
+        /// caller's hue.
+        /// </summary>
+        public static Sprite SoftGlow
+        {
+            get
+            {
+                if (_softGlow == null)
+                    _softGlow = CreateSoftGlow(64);
+                return _softGlow;
+            }
+        }
+
+        /// <summary>Vertical white fade: opaque at the top, transparent at the bottom.</summary>
+        public static Sprite FadeDown
+        {
+            get
+            {
+                if (_fadeDown == null)
+                    _fadeDown = CreateVerticalFade(128, true);
+                return _fadeDown;
+            }
+        }
+
+        /// <summary>Vertical white fade: transparent at the top, opaque at the bottom.</summary>
+        public static Sprite FadeUp
+        {
+            get
+            {
+                if (_fadeUp == null)
+                    _fadeUp = CreateVerticalFade(128, false);
+                return _fadeUp;
             }
         }
 
@@ -224,6 +264,41 @@ namespace TcgBattle.UI
             }
             tex.Apply();
             return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+        }
+
+        private static Sprite CreateSoftGlow(int size)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.ARGB32, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            float half = size * 0.5f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float d = Mathf.Sqrt((x - half) * (x - half) + (y - half) * (y - half)) / half;
+                    float a = Mathf.Clamp01(1f - d);
+                    a *= a;
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f));
+        }
+
+        private static Sprite CreateVerticalFade(int height, bool opaqueTop)
+        {
+            var tex = new Texture2D(2, height, TextureFormat.ARGB32, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            for (int y = 0; y < height; y++)
+            {
+                float t = height > 1 ? (float)y / (height - 1) : 1f;
+                float a = Mathf.SmoothStep(0f, 1f, opaqueTop ? t : 1f - t);
+                for (int x = 0; x < 2; x++)
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0, 0, 2, height), new Vector2(0.5f, 0.5f),
+                100f, 0, SpriteMeshType.FullRect);
         }
     }
 }

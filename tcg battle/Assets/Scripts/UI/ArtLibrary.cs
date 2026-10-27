@@ -26,6 +26,11 @@ namespace TcgBattle.UI
             return UiSpriteFactory.Circle;
         }
 
+        public static Sprite GetBattleBackground()
+        {
+            return Load("Arts/Testos");
+        }
+
         private static Sprite Load(string resourcePath)
         {
             if (string.IsNullOrEmpty(resourcePath))

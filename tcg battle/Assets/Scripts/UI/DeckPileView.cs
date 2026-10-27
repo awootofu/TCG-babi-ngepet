@@ -15,7 +15,7 @@ namespace TcgBattle.UI
         private TMP_Text _countText;
         private int _lastCount = -1;
 
-        public void Build()
+        public void Build(bool mirrored = false)
         {
             var root = (RectTransform)transform;
 
@@ -24,26 +24,29 @@ namespace TcgBattle.UI
             _stack.SetParent(root, false);
             _stack.anchorMin = _stack.anchorMax = new Vector2(0.5f, 0.5f);
             _stack.pivot = new Vector2(0.5f, 0.5f);
-            _stack.sizeDelta = new Vector2(74f, 100f);
+            _stack.sizeDelta = new Vector2(140f, 190f);
             _stack.anchoredPosition = Vector2.zero;
+            // The player's pile faces the opposite way; the count chip stays upright.
+            if (mirrored)
+                _stack.localRotation = Quaternion.Euler(0f, 0f, 180f);
 
             var stackGroup = stackGo.AddComponent<CanvasGroup>();
-            stackGroup.alpha = 0.88f;
+            stackGroup.alpha = 0.96f;
             stackGroup.interactable = false;
             stackGroup.blocksRaycasts = false;
 
-            var cardSize = new Vector2(70f, 94f);
+            var cardSize = new Vector2(132f, 178f);
             var under = CardBackVisual.Create(_stack, "DeckUnder", cardSize);
-            under.anchoredPosition = new Vector2(-7f, 7f);
+            under.anchoredPosition = new Vector2(-10f, 10f);
             under.localRotation = Quaternion.Euler(0f, 0f, -5f);
 
             var middle = CardBackVisual.Create(_stack, "DeckMiddle", cardSize);
-            middle.anchoredPosition = new Vector2(-3.5f, 3.5f);
+            middle.anchoredPosition = new Vector2(-5f, 5f);
             middle.localRotation = Quaternion.Euler(0f, 0f, -2f);
 
             var top = CardBackVisual.Create(_stack, "DeckTop", cardSize);
             top.anchoredPosition = Vector2.zero;
-            top.localRotation = Quaternion.Euler(0f, 0f, 3f);
+            top.localRotation = Quaternion.Euler(0f, 0f, 2f);
 
             BuildCounter(root);
             SetCount(0);
@@ -71,13 +74,13 @@ namespace TcgBattle.UI
             chipRt.SetParent(root, false);
             chipRt.anchorMin = chipRt.anchorMax = new Vector2(0.5f, 0.5f);
             chipRt.pivot = new Vector2(0.5f, 0.5f);
-            chipRt.sizeDelta = new Vector2(86f, 25f);
-            chipRt.anchoredPosition = new Vector2(0f, -61f);
+            chipRt.sizeDelta = new Vector2(96f, 24f);
+            chipRt.anchoredPosition = new Vector2(0f, -82f);
 
             var bg = chipGo.GetComponent<Image>();
             bg.sprite = UiSpriteFactory.Rounded;
             bg.type = Image.Type.Sliced;
-            bg.color = new Color(0.08f, 0.05f, 0.13f, 0.84f);
+            bg.color = UiStyle.WithAlpha(UiStyle.PanelInset, 0.94f);
             bg.raycastTarget = false;
 
             var ring = new GameObject("Outline", typeof(RectTransform), typeof(Image));
@@ -87,7 +90,7 @@ namespace TcgBattle.UI
             var ringImage = ring.GetComponent<Image>();
             ringImage.sprite = UiSpriteFactory.RoundOutline;
             ringImage.type = Image.Type.Sliced;
-            ringImage.color = new Color(0.85f, 0.66f, 0.26f, 0.58f);
+            ringImage.color = UiStyle.WithAlpha(UiStyle.Gold, 0.32f);
             ringImage.raycastTarget = false;
 
             var textGo = new GameObject("Count", typeof(RectTransform));
@@ -96,10 +99,10 @@ namespace TcgBattle.UI
             Stretch(textRt, 3f, 1f, 3f, 2f);
             _countText = textGo.AddComponent<TextMeshProUGUI>();
             _countText.font = TmpFontService.Get();
-            _countText.fontSize = 15f;
+            _countText.fontSize = 13f;
             _countText.fontStyle = FontStyles.Bold;
-            _countText.characterSpacing = 0.7f;
-            _countText.color = new Color(0.95f, 0.76f, 0.31f, 1f);
+            _countText.characterSpacing = 0.5f;
+            _countText.color = UiStyle.IvoryDim;
             _countText.alignment = TextAlignmentOptions.Center;
             _countText.raycastTarget = false;
             _countText.text = "DEK 0";

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using TcgBattle.Data;
 using TcgBattle.Gameplay;
 
 namespace TcgBattle.UI
@@ -32,22 +33,22 @@ namespace TcgBattle.UI
         private const float BandBotHeader = 0.9583f;      // 1035px
         private const float BandBotDeck = 0.9167f;        // 990px  deck count under BOT
 
-        // ---- palette: deep purple / muted lavender / warm ivory / subtle gold ----
-        private static readonly Color ColDeep = Hex(0x241B36);
-        private static readonly Color ColBotZone = Hex(0xCBC3E4);
-        private static readonly Color ColPanelInk = Hex(0x1C1530);
-        private static readonly Color ColIvory = Hex(0xF2EADA);
-        private static readonly Color ColIvoryDim = Hex(0xC9BFDB);
-        private static readonly Color ColGold = Hex(0xD9A843);
-        private static readonly Color ColGoldBright = Hex(0xF2C14E);
-        private static readonly Color ColInk = Hex(0x241B36);
-        private static readonly Color ColInkSoft = Hex(0x4C3D78);
-        private static readonly Color ColMaroon = Hex(0x5E3336);
-        private static readonly Color ColRed = Hex(0xC0504E);
-        private static readonly Color ColInkInfo = Hex(0x4A3F66);
-        private static readonly Color ColLavIdle = new Color(0.72f, 0.66f, 0.86f, 1f);
-        private static readonly Color ColBotPipEmpty = new Color(0.14f, 0.11f, 0.21f, 0.22f);
-        private static readonly Color ColPlayerPipEmpty = new Color(1f, 1f, 1f, 0.30f);
+        // ---- palette: shared with CardView / preview / FX via UiStyle ----
+        private static readonly Color ColDeep = UiStyle.BoardDeep;
+        private static readonly Color ColBotZone = UiStyle.BotZone;
+        private static readonly Color ColPanelInk = UiStyle.Panel;
+        private static readonly Color ColIvory = UiStyle.Ivory;
+        private static readonly Color ColIvoryDim = UiStyle.IvoryDim;
+        private static readonly Color ColGold = UiStyle.Gold;
+        private static readonly Color ColGoldBright = UiStyle.GoldBright;
+        private static readonly Color ColInk = UiStyle.Ink;
+        private static readonly Color ColInkSoft = UiStyle.InkSoft;
+        private static readonly Color ColMaroon = UiStyle.Maroon;
+        private static readonly Color ColRed = UiStyle.Danger;
+        private static readonly Color ColInkInfo = UiStyle.IvoryDim;
+        private static readonly Color ColLavIdle = UiStyle.IvoryDim;
+        private static readonly Color ColBotPipEmpty = UiStyle.PipEmpty;
+        private static readonly Color ColPlayerPipEmpty = UiStyle.PipEmpty;
 
         private BattleManager battle;
         private BattleStarter starter;
@@ -59,6 +60,9 @@ namespace TcgBattle.UI
         private CardView botActiveView, playerActiveView;
         private CardView[] botBenchViews, playerBenchViews;
         private RectTransform[] botBenchSlots, playerBenchSlots;
+        private RectTransform playerActiveSlot;
+        private Image playerActiveDropRing;
+        private Image[] playerBenchDropRings;
         private GameObject[] botBenchFrames, playerBenchFrames;
         private TMP_Text[] botBenchLabels, playerBenchLabels;
         private GameObject botActiveFrame;
@@ -160,6 +164,9 @@ namespace TcgBattle.UI
             ClearCombatFx();
             ClearFormFx();
             FinishDrawAnimations();
+            if (hand != null)
+                hand.SetDragEnabled(false);
+            ClearDropHighlights();
             _pendingPromoPlayer = _pendingPromoBot = null;
             _pendingBenchPlayer = _pendingBenchBot = null;
             _pendingRetreatPlayer = _pendingRetreatBot = null;
@@ -183,13 +190,13 @@ namespace TcgBattle.UI
             if (statusPill != null)
             {
                 statusPill.gameObject.SetActive(true);
-                statusPill.color = ColIvory;
+                statusPill.color = UiStyle.StatusPill;
             }
             if (statusShadow != null)
                 statusShadow.gameObject.SetActive(true);
             if (statusText != null)
             {
-                statusText.color = ColInk;
+                statusText.color = UiStyle.StatusText;
                 statusText.text = "";
             }
             if (turnPillText != null)
@@ -218,7 +225,6 @@ namespace TcgBattle.UI
             m.OnRetreated += HandleRetreat;
             m.OnScoreChanged += HandleScore;
             m.OnDrawn += HandleDraw;
-            m.OnTransformedFrom += HandleTransformed;
             m.OnSupportDestroyed += HandleSupportDestroyed;
             m.OnSupportUsed += HandleSupportUsed;
             m.OnGameOver += ShowGameOver;
@@ -239,7 +245,6 @@ namespace TcgBattle.UI
             m.OnRetreated -= HandleRetreat;
             m.OnScoreChanged -= HandleScore;
             m.OnDrawn -= HandleDraw;
-            m.OnTransformedFrom -= HandleTransformed;
             m.OnSupportDestroyed -= HandleSupportDestroyed;
             m.OnSupportUsed -= HandleSupportUsed;
             m.OnGameOver -= ShowGameOver;
@@ -261,13 +266,16 @@ namespace TcgBattle.UI
             ClearCombatFx();
             ClearFormFx();
             FinishDrawAnimations();
+            if (hand != null)
+                hand.SetDragEnabled(false);
+            ClearDropHighlights();
             CloseTransformOverlayImmediate();
             if (overOverlay != null)
                 overOverlay.SetActive(false);
             if (coinOverlay != null)
                 coinOverlay.SetActive(false);
             if (statusPill != null)
-                statusPill.color = ColIvory;
+                statusPill.color = UiStyle.StatusPill;
         }
 
         private void OnDestroy()
@@ -287,6 +295,10 @@ namespace TcgBattle.UI
         {
             canvasRt = (RectTransform)transform;
 
+            // Full-screen art sits directly under the canvas, behind the safe-area
+            // root, so no board or UI layer is ever hidden by it.
+            BuildScreenBackground();
+
             // safe-area root: every UI element lands under this so notches/home
             // indicators can never cover the battle screen.
             var rootGo = new GameObject("SafeRoot", typeof(RectTransform), typeof(SafeAreaFitter));
@@ -304,19 +316,20 @@ namespace TcgBattle.UI
             BuildStaminaBadge();
             BuildScorePips();
             BuildActionRow();
-            BuildTransformAction();
             BuildBotHandFan();
             BuildHand();
             BuildDrawFxLayer();
             BuildFormFxLayer();
             BuildCombatFxLayer();
             BuildOverlays();
-            BuildTransformOverlay();
-            BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
 
             // capture the static layout once so it can be rescaled when the canvas size
             // changes (card views capture themselves in CardView.ApplyScale)
             UiRescaler.CaptureTreeExcludingCards(safeRoot, _registry);
+
+            // Built after the capture: the fixed side inspection panel owns its
+            // responsive width and must not be resized away by UiRescaler.
+            BuildInspectPreview();   // last sibling: drawn over everything, never intercepts input
         }
 
         private void Update()
@@ -338,6 +351,7 @@ namespace TcgBattle.UI
                 _lastLayoutWidth = w;
                 if (hand != null)
                     hand.SetViewportWidth(Mathf.Min(1450f, Mathf.Max(640f, w - 180f)));
+                FitInspectPanel();
             }
 
             float k = Mathf.Clamp(h / RefH, 0.3f, 2f);
@@ -380,14 +394,52 @@ namespace TcgBattle.UI
             RefreshAll();
         }
 
+        /// <summary>
+        /// Full-screen battle illustration. It is anchored to the canvas rather than
+        /// the safe-area root so it always covers the screen, and it is the first
+        /// sibling so every card, panel, overlay and FX draws above it. The built-in
+        /// AspectRatioFitter crops the 16:9 art to whatever aspect the window has
+        /// instead of stretching it. Its Image is raycast-free.
+        /// </summary>
+        private void BuildScreenBackground()
+        {
+            if (transform.Find("BattleBackground") != null)
+                return;
+
+            var go = new GameObject("BattleBackground", typeof(RectTransform));
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(transform, false);
+            rt.SetAsFirstSibling();
+            StretchFull(rt, 0f);
+
+            // Fallback surface behind the art; it only shows if the sprite is missing.
+            var baseFill = MakeImage("BaseFill", null, ColDeep, rt);
+            StretchFull(baseFill.rectTransform, 0f);
+
+            var sprite = ArtLibrary.GetBattleBackground();
+            if (sprite == null)
+                return;
+
+            var art = MakeImage("Artwork", sprite, Color.white, rt);
+            art.raycastTarget = false;
+            art.preserveAspect = true;
+            var ar = art.rectTransform;
+            ar.anchorMin = ar.anchorMax = new Vector2(0.5f, 0.5f);
+            ar.pivot = new Vector2(0.5f, 0.5f);
+            ar.anchoredPosition = Vector2.zero;
+            ar.sizeDelta = new Vector2(1920f, 1080f);
+
+            var fitter = art.gameObject.AddComponent<AspectRatioFitter>();
+            fitter.aspectMode = AspectRatioFitter.AspectMode.EnvelopeParent;
+            fitter.aspectRatio = 16f / 9f;
+        }
+
         private void BuildBackground()
         {
-            var deep = MakeImage("BgDeep", null, ColDeep);
-            StretchFull(deep.rectTransform, 0f);
-
-            // Bot territory: muted lavender panel from the divider line up beyond the
-            // top edge (rounded top corners pushed off-screen).
-            var panel = MakeImage("BotZonePanel", UiSpriteFactory.Rounded, ColBotZone);
+            // The illustration itself is built under the canvas (BuildScreenBackground).
+            // These zone veils only tint it for readability; they never cover it fully.
+            var panel = MakeImage("BotZonePanel", UiSpriteFactory.Rounded,
+                UiStyle.WithAlpha(ColBotZone, 0.42f));
             panel.type = Image.Type.Sliced;
             var pr = panel.rectTransform;
             pr.anchorMin = new Vector2(0f, BandDivider);
@@ -395,25 +447,79 @@ namespace TcgBattle.UI
             pr.pivot = new Vector2(0.5f, 0.5f);
             pr.offsetMin = new Vector2(0f, 0f);
             pr.offsetMax = new Vector2(0f, 46f);
+
+            var botAtmosphere = MakeImage("BotAtmosphere", UiSpriteFactory.FadeDown,
+                UiStyle.WithAlpha(UiStyle.BotZoneGlow, 0.30f));
+            var ba = botAtmosphere.rectTransform;
+            ba.anchorMin = new Vector2(0f, BandDivider);
+            ba.anchorMax = new Vector2(1f, 1f);
+            ba.pivot = new Vector2(0.5f, 0.5f);
+            ba.offsetMin = Vector2.zero;
+            ba.offsetMax = new Vector2(0f, 46f);
+
+            // Player field: a very soft warm-violet lift from the bottom edge.
+            var playerAtmosphere = MakeImage("PlayerAtmosphere", UiSpriteFactory.FadeUp,
+                UiStyle.WithAlpha(UiStyle.PlayerZoneGlow, 0.22f));
+            var pa = playerAtmosphere.rectTransform;
+            pa.anchorMin = new Vector2(0f, 0f);
+            pa.anchorMax = new Vector2(1f, BandDivider);
+            pa.pivot = new Vector2(0.5f, 0.5f);
+            pa.offsetMin = Vector2.zero;
+            pa.offsetMax = Vector2.zero;
+
+            BuildBoardFrame();
+        }
+
+        /// <summary>
+        /// Thin inner frame and corner diamonds give the board a finished "table"
+        /// edge. Everything is decorative, raycast-free and sits behind the cards.
+        /// </summary>
+        private void BuildBoardFrame()
+        {
+            var frame = MakeImage("BoardFrame", UiSpriteFactory.RoundOutline, UiStyle.BoardFrame);
+            frame.type = Image.Type.Sliced;
+            var fr = frame.rectTransform;
+            fr.anchorMin = Vector2.zero;
+            fr.anchorMax = Vector2.one;
+            fr.pivot = new Vector2(0.5f, 0.5f);
+            fr.offsetMin = new Vector2(18f, 18f);
+            fr.offsetMax = new Vector2(-18f, -18f);
+
+            AddFrameDiamond(fr, "FrameDiamondTL", new Vector2(0f, 1f));
+            AddFrameDiamond(fr, "FrameDiamondTR", new Vector2(1f, 1f));
+            AddFrameDiamond(fr, "FrameDiamondBL", new Vector2(0f, 0f));
+            AddFrameDiamond(fr, "FrameDiamondBR", new Vector2(1f, 0f));
+        }
+
+        private void AddFrameDiamond(RectTransform parent, string name, Vector2 anchor)
+        {
+            var d = MakeImage(name, UiSpriteFactory.Diamond, UiStyle.BoardFrameDiamond);
+            var rt = d.rectTransform;
+            rt.SetParent(parent, false);
+            rt.anchorMin = rt.anchorMax = anchor;
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(9f, 9f);
+            rt.anchoredPosition = Vector2.zero;
         }
 
         /// <summary>Spot pool + ornament ring under each active slot (focal-point staging).</summary>
         private void BuildStageOrnaments()
         {
-            // player stage (deep zone): warm ivory pool, gold ring, kawung-style diamonds
-            // Keep the decorative shell clear of the first bench slot (slot left edge
-            // sits at x=654px); 320px leaves a 14px breathing gap at 1080p.
-            AddStage(-480f, BandActivePlayer, new Vector2(320f, 330f), new Vector2(440f, 300f),
-                new Color(1f, 0.86f, 0.62f, 0.07f), new Color(0.85f, 0.66f, 0.26f, 0.42f));
+            // Player stage (dark field): a restrained violet pool under the active card.
+            AddStage(-380f, BandActivePlayer, new Vector2(320f, 330f), new Vector2(440f, 300f),
+                UiStyle.WithAlpha(UiStyle.Dark, 0.10f), UiStyle.WithAlpha(UiStyle.Gold, 0.38f));
 
-            // bot stage (lavender zone): ink pool with a deep gold ring
-            AddStage(-480f, BandActiveBot, new Vector2(310f, 320f), new Vector2(430f, 290f),
-                new Color(0.14f, 0.11f, 0.21f, 0.07f), new Color(0.55f, 0.42f, 0.15f, 0.42f));
+            // Bot stage (dark terrace): a warm ember pool so the opponent's side still
+            // reads as the Fire deck without tinting the card art.
+            AddStage(-380f, BandActiveBot, new Vector2(310f, 320f), new Vector2(430f, 290f),
+                UiStyle.WithAlpha(UiStyle.Ember, 0.10f), UiStyle.WithAlpha(UiStyle.Gold, 0.34f));
         }
 
         private void AddStage(float x, float yPercent, Vector2 ringSize, Vector2 poolSize, Color poolColor, Color ringColor)
         {
-            var pool = MakeImage("StagePool", UiSpriteFactory.SoftShadow, poolColor);
+            // SoftGlow is tintable (the black SoftShadow texture is not); this gives the
+            // active slots a real warm/violet pool instead of a dark smudge.
+            var pool = MakeImage("StagePool", UiSpriteFactory.SoftGlow, poolColor);
             Place(pool.rectTransform, x, yPercent, poolSize);
 
             var ring = MakeImage("StageRing", UiSpriteFactory.RoundOutline, ringColor);
@@ -421,7 +527,7 @@ namespace TcgBattle.UI
             Place(ring.rectTransform, x, yPercent, ringSize);
 
             // base line: a warm stage edge under each active slot (the focal marker)
-            var baseLine = MakeImage("StageBase", UiSpriteFactory.Rounded, new Color(0.85f, 0.66f, 0.26f, 0.62f));
+            var baseLine = MakeImage("StageBase", UiSpriteFactory.Rounded, UiStyle.WithAlpha(UiStyle.Gold, 0.55f));
             baseLine.type = Image.Type.Sliced;
             Place(baseLine.rectTransform, x, yPercent, new Vector2(ringSize.x * 0.46f, 6f));
             baseLine.rectTransform.anchoredPosition = new Vector2(0f, -ringSize.y * 0.5f);
@@ -445,19 +551,36 @@ namespace TcgBattle.UI
 
         private void BuildSlots()
         {
-            CreateBenchRow("BotBenchSlot", BandBenchBot, -220f, 220f, new Vector2(172f, 230f),
+            CreateBenchRow("BotBenchSlot", BandBenchBot, -50f, 220f, new Vector2(172f, 230f),
                 out botBenchSlots, out botBenchFrames, out botBenchLabels, out botBenchViews, "BotBench");
 
-            var botActiveSlot = Node("BotActiveSlot", -480f, BandActiveBot, new Vector2(224f, 300f));
+            var botActiveSlot = Node("BotActiveSlot", -380f, BandActiveBot, new Vector2(224f, 300f));
             botActiveFrame = MakeSlotFrame(botActiveSlot, "Kosong", 22f, out botActiveLabel);
             botActiveView = CardView.Create(botActiveSlot, new Vector2(224f, 300f), "BotActive");
 
-            CreateBenchRow("PlayerBenchSlot", BandBenchPlayer, -220f, 220f, new Vector2(172f, 230f),
+            CreateBenchRow("PlayerBenchSlot", BandBenchPlayer, -50f, 220f, new Vector2(172f, 230f),
                 out playerBenchSlots, out playerBenchFrames, out playerBenchLabels, out playerBenchViews, "PlayerBench");
 
-            var playerActiveSlot = Node("PlayerActiveSlot", -480f, BandActivePlayer, new Vector2(224f, 300f));
+            playerActiveSlot = Node("PlayerActiveSlot", -380f, BandActivePlayer, new Vector2(224f, 300f));
             playerActiveFrame = MakeSlotFrame(playerActiveSlot, "PILIH KARTU\nAKTIFMU", 22f, out playerActiveLabel);
             playerActiveView = CardView.Create(playerActiveSlot, new Vector2(224f, 300f), "PlayerActive");
+            playerActiveDropRing = CreateDropRing(playerActiveSlot);
+
+            playerBenchDropRings = new Image[playerBenchSlots.Length];
+            for (int i = 0; i < playerBenchSlots.Length; i++)
+                playerBenchDropRings[i] = CreateDropRing(playerBenchSlots[i]);
+        }
+
+        private Image CreateDropRing(RectTransform slot)
+        {
+            var ring = MakeImage("DropRing", UiSpriteFactory.RoundOutline,
+                UiStyle.SelectedFrame, slot);
+            ring.type = Image.Type.Sliced;
+            Stretch(ring.rectTransform, -5, -5, -5, -5);
+            ring.gameObject.SetActive(false);
+            // EmptyFrame is sibling 0; keep the ring behind the card but above the slot.
+            ring.rectTransform.SetSiblingIndex(1);
+            return ring;
         }
 
         private void CreateBenchRow(string slotName, float band, float startX, float stepX, Vector2 size,
@@ -480,7 +603,7 @@ namespace TcgBattle.UI
         private void BuildBotHeader()
         {
             var group = NodeLeft("BotHeader", 80f, BandBotHeader, new Vector2(480f, 44f));
-            var label = MakeText("BotLabel", group, 26, ColInk, TextAlignmentOptions.Left, bold: true);
+            var label = MakeText("BotLabel", group, 26, ColIvory, TextAlignmentOptions.Left, bold: true);
             label.characterSpacing = 4f;
             PlaceLocal(label.rectTransform, 0f, 0f, new Vector2(160f, 40f));
             label.text = "BOT";
@@ -513,13 +636,13 @@ namespace TcgBattle.UI
         /// </summary>
         private void BuildStaminaBadge()
         {
-            var playerRoot = NodeRight("PlayerStamina", 110f, 0.435f, new Vector2(148f, 148f));
+            var playerRoot = NodeRight("PlayerStamina", 110f, 0.100f, new Vector2(148f, 148f));
             playerStaminaRoot = playerRoot;
             var playerOuter = MakeChildImage(playerRoot, "Outer", UiSpriteFactory.Diamond,
-                new Color(0.85f, 0.66f, 0.26f, 0.88f), Vector2.zero, new Vector2(146f, 146f));
+                UiStyle.WithAlpha(UiStyle.Gold, 0.88f), Vector2.zero, new Vector2(146f, 146f));
             playerOuter.raycastTarget = false;
             var playerInner = MakeChildImage(playerRoot, "Fill", UiSpriteFactory.Diamond,
-                new Color(0.10f, 0.07f, 0.18f, 0.97f), Vector2.zero, new Vector2(134f, 134f));
+                UiStyle.WithAlpha(UiStyle.PanelInset, 0.97f), Vector2.zero, new Vector2(134f, 134f));
             playerInner.raycastTarget = false;
 
             playerEnergyText = MakeText("PlayerStaminaText", playerRoot, 34, ColIvory,
@@ -531,15 +654,15 @@ namespace TcgBattle.UI
                 TextAlignmentOptions.Center, bold: true);
             playerCaption.characterSpacing = 1.5f;
             PlaceCenter(playerCaption.rectTransform, new Vector2(0f, -44f), new Vector2(120f, 16f));
-            playerCaption.text = "STAMINA";
+            playerCaption.text = "ENERGI";
 
             var botRoot = NodeRight("BotStamina", 110f, 0.7800f, new Vector2(74f, 74f));
             botStaminaRoot = botRoot;
             var botOuter = MakeChildImage(botRoot, "Outer", UiSpriteFactory.Diamond,
-                new Color(0.55f, 0.42f, 0.15f, 0.72f), Vector2.zero, new Vector2(72f, 72f));
+                UiStyle.WithAlpha(UiStyle.Gold, 0.82f), Vector2.zero, new Vector2(72f, 72f));
             botOuter.raycastTarget = false;
             var botInner = MakeChildImage(botRoot, "Fill", UiSpriteFactory.Diamond,
-                new Color(0.10f, 0.07f, 0.18f, 0.94f), Vector2.zero, new Vector2(64f, 64f));
+                UiStyle.WithAlpha(UiStyle.PanelInset, 0.94f), Vector2.zero, new Vector2(64f, 64f));
             botInner.raycastTarget = false;
 
             botEnergyText = MakeText("BotStaminaText", botRoot, 15, ColIvory,
@@ -550,7 +673,7 @@ namespace TcgBattle.UI
             var botCaption = MakeText("BotStaminaCaption", botRoot, 7, ColGold,
                 TextAlignmentOptions.Center, bold: true);
             PlaceCenter(botCaption.rectTransform, new Vector2(0f, -22f), new Vector2(64f, 10f));
-            botCaption.text = "BOT";
+            botCaption.text = "ENERGI";
             botCaption.characterSpacing = 0.8f;
         }
 
@@ -567,20 +690,20 @@ namespace TcgBattle.UI
             {
                 float x = -40f + i * 40f;
                 var socket = MakeImage($"BotPipSocket{i}", UiSpriteFactory.Ring,
-                    new Color(0f, 0f, 0f, 0.22f), botGroup);
+                    UiStyle.PipSocket, botGroup);
                 PlaceCenter(socket.rectTransform, new Vector2(x, 0f), new Vector2(32f, 32f));
                 var pip = MakeImage($"BotPip{i}", UiSpriteFactory.Diamond, ColBotPipEmpty, botGroup);
                 PlaceCenter(pip.rectTransform, new Vector2(x, 0f), new Vector2(24f, 24f));
                 botPips[i] = pip;
             }
 
-            var playerGroup = NodeRight("PlayerScorePips", 265f, 0.435f, new Vector2(140f, 44f));
+            var playerGroup = NodeRight("PlayerScorePips", 265f, 0.100f, new Vector2(140f, 44f));
             playerPips = new Image[3];
             for (int i = 0; i < 3; i++)
             {
                 float x = -40f + i * 40f;
                 var socket = MakeImage($"PlayerPipSocket{i}", UiSpriteFactory.Ring,
-                    new Color(1f, 1f, 1f, 0.16f), playerGroup);
+                    UiStyle.PipSocket, playerGroup);
                 PlaceCenter(socket.rectTransform, new Vector2(x, 0f), new Vector2(32f, 32f));
                 var pip = MakeImage($"PlayerPip{i}", UiSpriteFactory.Diamond, ColPlayerPipEmpty, playerGroup);
                 PlaceCenter(pip.rectTransform, new Vector2(x, 0f), new Vector2(24f, 24f));
@@ -590,36 +713,45 @@ namespace TcgBattle.UI
 
         private void BuildActionRow()
         {
+            // Soft warm glow along the zone divider, behind the status/action rail.
+            var divGlow = MakeImage("DivGlow", UiSpriteFactory.SoftGlow, UiStyle.DividerGlow);
+            var dg = divGlow.rectTransform;
+            dg.anchorMin = dg.anchorMax = new Vector2(0.5f, BandDivider);
+            dg.pivot = new Vector2(0.5f, 0.5f);
+            dg.sizeDelta = new Vector2(1400f, 64f);
+            dg.anchoredPosition = Vector2.zero;
+
             // ---- one compact control bar between the two battlefields ----
             var statusShadow = MakeImage("StatusShadow", UiSpriteFactory.SoftShadow, new Color(0f, 0f, 0f, 0.35f));
             this.statusShadow = statusShadow;
             Place(statusShadow.rectTransform, -410f, BandStatus - 0.003f, new Vector2(600f, 52f));
 
-            statusPill = MakeImage("StatusPill", UiSpriteFactory.Rounded, ColIvory);
+            statusPill = MakeImage("StatusPill", UiSpriteFactory.Rounded, UiStyle.StatusPill);
             statusPill.type = Image.Type.Sliced;
             Place(statusPill.rectTransform, -410f, BandStatus, new Vector2(560f, 44f));
 
-            var statusRing = MakeImage("StatusRing", UiSpriteFactory.RoundOutline, new Color(0.85f, 0.66f, 0.26f, 0.35f));
+            var statusRing = MakeImage("StatusRing", UiSpriteFactory.RoundOutline, UiStyle.StatusRing);
             statusRing.type = Image.Type.Sliced;
             var ringRt = statusRing.rectTransform;
             ringRt.SetParent(statusPill.rectTransform, false);
             Stretch(ringRt, 2, 2, 2, 2);
 
-            statusText = MakeText("StatusText", statusPill.rectTransform, 22, ColInk, TextAlignmentOptions.Center, bold: true);
+            statusText = MakeText("StatusText", statusPill.rectTransform, 22, UiStyle.StatusText,
+                TextAlignmentOptions.Center, bold: true);
             Stretch(statusText.rectTransform, 18, 3, 18, 4);
             statusText.enableAutoSizing = true;
             statusText.fontSizeMin = 14f;
             statusText.fontSizeMax = 22f;
 
             // Bot-zone edge: a thin gold-topped divider spanning the desktop width.
-            var divLine = MakeImage("DivLine", null, new Color(0.85f, 0.66f, 0.26f, 0.38f));
+            var divLine = MakeImage("DivLine", null, UiStyle.WithAlpha(UiStyle.Gold, 0.38f));
             var dl = divLine.rectTransform;
             dl.anchorMin = new Vector2(0f, BandDivider);
             dl.anchorMax = new Vector2(1f, BandDivider);
             dl.pivot = new Vector2(0.5f, 0.5f);
             dl.offsetMin = new Vector2(80f, -1.5f);
             dl.offsetMax = new Vector2(-80f, 1.5f);
-            var divDiamond = MakeImage("DivDiamond", UiSpriteFactory.Diamond, new Color(0.85f, 0.66f, 0.26f, 0.75f));
+            var divDiamond = MakeImage("DivDiamond", UiSpriteFactory.Diamond, UiStyle.WithAlpha(UiStyle.Gold, 0.75f));
             Place(divDiamond.rectTransform, 0f, BandDivider, new Vector2(14f, 14f));
 
             turnPillBg = MakeImage("TurnPill", UiSpriteFactory.Rounded, ColPanelInk);
@@ -642,7 +774,7 @@ namespace TcgBattle.UI
                     battle.Retreat();
             });
 
-            serangBtn = MakeButton("SerangBtn", "SERANG", 24f, ColGoldBright, Hex(0x3A2506),
+            serangBtn = MakeButton("SerangBtn", "SERANG", 24f, ColGoldBright, UiStyle.InkOnGold,
                 200f, BandButtons, new Vector2(180f, 60f));
             serangLabel = serangBtn.GetComponentInChildren<TMP_Text>();
             serangBtn.onClick.AddListener(() =>
@@ -668,7 +800,7 @@ namespace TcgBattle.UI
         private void BuildTransformAction()
         {
             transformActionRoot = Node("TransformAction", 420f, BandActivePlayer, new Vector2(200f, 80f));
-            transformBtn = MakeButton("TransformBtn", "TRANSFORMASI", 19f, ColGoldBright, Hex(0x3A2506),
+            transformBtn = MakeButton("TransformBtn", "TRANSFORMASI", 19f, ColGoldBright, UiStyle.InkOnGold,
                 0f, 0.5f, new Vector2(190f, 54f), transformActionRoot);
             transformBtn.onClick.AddListener(OpenTransformOverlay);
 
@@ -682,13 +814,15 @@ namespace TcgBattle.UI
         /// </summary>
         private void BuildDeckPiles()
         {
+            // Both piles live on the left rail, one per side, matching the large
+            // tabletop deck stacks in the reference composition.
             var botGo = new GameObject("BotDeckStack", typeof(RectTransform));
             var botRt = (RectTransform)botGo.transform;
             botRt.SetParent(safeRoot, false);
-            botRt.anchorMin = botRt.anchorMax = new Vector2(1f, 0.9500f);
+            botRt.anchorMin = botRt.anchorMax = new Vector2(0f, 0.7400f);
             botRt.pivot = new Vector2(0.5f, 0.5f);
-            botRt.sizeDelta = new Vector2(74f, 100f);
-            botRt.anchoredPosition = new Vector2(-130f, 0f);
+            botRt.sizeDelta = new Vector2(140f, 190f);
+            botRt.anchoredPosition = new Vector2(160f, 0f);
             botDeckStack = botRt;
             botDeckPile = botGo.AddComponent<DeckPileView>();
             botDeckPile.Build();
@@ -696,13 +830,13 @@ namespace TcgBattle.UI
             var playerGo = new GameObject("PlayerDeckStack", typeof(RectTransform));
             var playerRt = (RectTransform)playerGo.transform;
             playerRt.SetParent(safeRoot, false);
-            playerRt.anchorMin = playerRt.anchorMax = new Vector2(0f, 0.3500f);
+            playerRt.anchorMin = playerRt.anchorMax = new Vector2(0f, 0.3000f);
             playerRt.pivot = new Vector2(0.5f, 0.5f);
-            playerRt.sizeDelta = new Vector2(74f, 100f);
-            playerRt.anchoredPosition = new Vector2(100f, 0f);
+            playerRt.sizeDelta = new Vector2(140f, 190f);
+            playerRt.anchoredPosition = new Vector2(160f, 0f);
             playerDeckStack = playerRt;
             playerDeckPile = playerGo.AddComponent<DeckPileView>();
-            playerDeckPile.Build();
+            playerDeckPile.Build(mirrored: true);
         }
 
         /// <summary>
@@ -718,7 +852,7 @@ namespace TcgBattle.UI
             fanRt.anchorMin = fanRt.anchorMax = new Vector2(1f, 0.9259f);
             fanRt.pivot = new Vector2(0.5f, 0.5f);
             fanRt.sizeDelta = new Vector2(440f, 200f);
-            fanRt.anchoredPosition = new Vector2(-410f, 0f);
+            fanRt.anchoredPosition = new Vector2(-240f, 0f);
 
             botHandFan = fanGo.AddComponent<BotHandFan>();
             botHandFan.Initialize(fanRt, botDeckStack, card =>
@@ -792,6 +926,127 @@ namespace TcgBattle.UI
             rt.sizeDelta = new Vector2(1500f, 320f);
             rt.anchoredPosition = Vector2.zero;
             hand.SetClickHandler(OnCardClicked);
+            hand.SetDragHandlers(OnHandDragStarted, OnHandDragMoved, OnHandDrop, ClearDropHighlights);
+        }
+
+        // ---------------------------------------------------------------- hand drag/drop
+
+        private static bool IsInside(RectTransform target, Vector2 screenPosition)
+        {
+            return target != null &&
+                RectTransformUtility.RectangleContainsScreenPoint(target, screenPosition, null);
+        }
+
+        private static bool IsTumbalAnak(CardInstance card)
+        {
+            return card != null && card.IsSupport && card.Support != null &&
+                card.Support.effect == SupportEffect.TumbalAnakHandPassive;
+        }
+
+        private void ClearDropHighlights()
+        {
+            if (playerActiveDropRing != null)
+                playerActiveDropRing.gameObject.SetActive(false);
+            if (playerBenchDropRings != null)
+                for (int i = 0; i < playerBenchDropRings.Length; i++)
+                    if (playerBenchDropRings[i] != null)
+                        playerBenchDropRings[i].gameObject.SetActive(false);
+        }
+
+        /// <summary>
+        /// Highlight only destinations that the authoritative manager would accept
+        /// for this exact card. Invalid destinations stay unhighlighted.
+        /// </summary>
+        private void UpdateDropHighlights(CardView view)
+        {
+            ClearDropHighlights();
+            if (battle == null || view == null || view.Card == null)
+                return;
+            var card = view.Card;
+
+            if (battle.Phase == Phase.Setup)
+            {
+                if (playerActiveDropRing != null && battle.CanSelectStartingActive(card))
+                    playerActiveDropRing.gameObject.SetActive(true);
+                return;
+            }
+            if (battle.Phase != Phase.PlayerTurn)
+                return;
+
+            if (BattleRules.IsEvolutionOnly(card))
+            {
+                if (playerActiveDropRing != null && battle.CanEvolve(card, out _))
+                    playerActiveDropRing.gameObject.SetActive(true);
+                return;
+            }
+
+            // One-shot supports take effect from hand; Tumbal Anak stays in hand.
+            // Neither is placed into a battle slot by dragging.
+            if (BattleManager.IsOneShotSupport(card) || IsTumbalAnak(card))
+                return;
+
+            if (battle.CanPlayToBench(card, out _))
+            {
+                int free = battle.Player.Bench.Count;
+                if (playerBenchDropRings != null && free >= 0 && free < playerBenchDropRings.Length &&
+                    playerBenchDropRings[free] != null)
+                    playerBenchDropRings[free].gameObject.SetActive(true);
+            }
+        }
+
+        private void OnHandDragStarted(CardView view, Vector2 screenPosition)
+        {
+            UpdateDropHighlights(view);
+        }
+
+        private void OnHandDragMoved(CardView view, Vector2 screenPosition)
+        {
+            UpdateDropHighlights(view);
+        }
+
+        /// <summary>
+        /// Drop handler. Every branch delegates the actual state change to the
+        /// authoritative BattleManager and returns whether it was accepted.
+        /// </summary>
+        private bool OnHandDrop(CardView view, Vector2 screenPosition)
+        {
+            ClearDropHighlights();
+            if (battle == null || view == null || view.Card == null)
+                return false;
+            var card = view.Card;
+
+            if (battle.Phase == Phase.Setup)
+            {
+                if (IsInside(playerActiveSlot, screenPosition) && battle.CanSelectStartingActive(card))
+                {
+                    battle.ConfirmStartingActive(card);
+                    return true;
+                }
+                return false;
+            }
+
+            if (battle.Phase != Phase.PlayerTurn)
+                return false;
+
+            if (BattleRules.IsEvolutionOnly(card))
+            {
+                if (IsInside(playerActiveSlot, screenPosition) && battle.CanEvolve(card, out _))
+                    return battle.PlayCardFromHand(card);
+                return false;
+            }
+
+            if (BattleManager.IsOneShotSupport(card) || IsTumbalAnak(card))
+                return false;
+
+            if (battle.CanPlayToBench(card, out _))
+            {
+                // Bench cards are appended; the next free slot is the real destination.
+                int free = battle.Player.Bench.Count;
+                if (free >= 0 && free < playerBenchSlots.Length &&
+                    IsInside(playerBenchSlots[free], screenPosition))
+                    return battle.PlayCardFromHand(card);
+            }
+            return false;
         }
 
         private void BuildOverlays()
@@ -850,18 +1105,18 @@ namespace TcgBattle.UI
             overGo.AddComponent<GraphicRaycaster>();
 
             var overDim = overGo.AddComponent<Image>();
-            overDim.color = new Color(0.04f, 0.02f, 0.08f, 0.72f);
+            overDim.color = UiStyle.OverlayDim;
             overDim.raycastTarget = true; // block the board behind the result
 
             overGroup = overGo.AddComponent<CanvasGroup>();
             overGroup.alpha = 0f; // fades in on ShowGameOver
 
             var panel = MakeChildImage(overRt, "Panel", UiSpriteFactory.Rounded,
-                new Color(0.11f, 0.08f, 0.19f, 1f), Vector2.zero, new Vector2(820f, 460f));
+                UiStyle.ResultPanel, Vector2.zero, new Vector2(820f, 460f));
             panel.type = Image.Type.Sliced;
 
             var panelRing = MakeChildImage(overRt, "PanelRing", UiSpriteFactory.RoundOutline,
-                new Color(0.85f, 0.66f, 0.26f, 0.45f), Vector2.zero, new Vector2(806f, 446f));
+                UiStyle.WithAlpha(UiStyle.Gold, 0.45f), Vector2.zero, new Vector2(806f, 446f));
             panelRing.type = Image.Type.Sliced;
 
             var ribbon = MakeChildImage(overRt, "Ribbon", UiSpriteFactory.Rounded, ColIvory,
@@ -881,7 +1136,7 @@ namespace TcgBattle.UI
             overScoreText = MakeText("OverScore", overRt, 28, ColIvory, TextAlignmentOptions.Center);
             Place(overScoreText.rectTransform, 0f, 0.535f, new Vector2(760f, 54f));
 
-            againBtn = MakeButton("AgainBtn", "MAIN LAGI", 24f, ColGoldBright, Hex(0x3A2506),
+            againBtn = MakeButton("AgainBtn", "MAIN LAGI", 24f, ColGoldBright, UiStyle.InkOnGold,
                 0f, 0.385f, new Vector2(300f, 80f), overRt);
             againBtn.onClick.AddListener(() =>
             {
@@ -909,7 +1164,7 @@ namespace TcgBattle.UI
             StretchFull(rt);
 
             var dim = go.GetComponent<Image>();
-            dim.color = new Color(0.04f, 0.02f, 0.08f, 0.76f);
+            dim.color = UiStyle.OverlayDim;
             dim.raycastTarget = true;
             var backdrop = go.AddComponent<Button>();
             backdrop.targetGraphic = dim;
@@ -922,10 +1177,10 @@ namespace TcgBattle.UI
             transformGroup.blocksRaycasts = false;
 
             var panel = MakeChildImage(rt, "TransformPanel", UiSpriteFactory.Rounded,
-                new Color(0.11f, 0.08f, 0.19f, 1f), Vector2.zero, new Vector2(840f, 650f));
+                UiStyle.ResultPanel, Vector2.zero, new Vector2(840f, 650f));
             panel.type = Image.Type.Sliced;
             var panelRing = MakeChildImage(panel.rectTransform, "TransformPanelRing",
-                UiSpriteFactory.RoundOutline, new Color(0.85f, 0.66f, 0.26f, 0.45f),
+                UiSpriteFactory.RoundOutline, UiStyle.WithAlpha(UiStyle.Gold, 0.45f),
                 Vector2.zero, new Vector2(826f, 636f));
             panelRing.type = Image.Type.Sliced;
 
@@ -1123,28 +1378,22 @@ namespace TcgBattle.UI
             bool myTurn = battle.Phase == Phase.PlayerTurn;
 
             // ---- board slots ----
-            BindSlot(botActiveView, battle.Bot.Active, CardDisplayMode.Active, botInspect: true);
+            BindSlot(botActiveView, battle.Bot.Active, CardDisplayMode.Active, inspect: true);
             bool botActiveEmpty = battle.Bot.Active == null;
             botActiveFrame.SetActive(botActiveEmpty);
             if (botActiveEmpty && botActiveLabel != null)
                 botActiveLabel.text = "Kosong";
-            BindBenchRow(botBenchViews, botBenchFrames, botBenchLabels, battle.Bot.Bench, "Kosong", botInspect: true);
+            BindBenchRow(botBenchViews, botBenchFrames, botBenchLabels, battle.Bot.Bench, "Kosong", inspect: true);
 
-            BindSlot(playerActiveView, battle.Player.Active, CardDisplayMode.Active);
+            BindSlot(playerActiveView, battle.Player.Active, CardDisplayMode.Active, inspect: true);
             bool pickHint = setup && battle.Player.Active == null;
             playerActiveFrame.SetActive(battle.Player.Active == null);
             playerActiveLabel.text = pickHint ? "PILIH KARTU\nAKTIFMU" : "Kosong";
-            BindBenchRow(playerBenchViews, playerBenchFrames, playerBenchLabels, battle.Player.Bench, "Kosong");
+            BindBenchRow(playerBenchViews, playerBenchFrames, playerBenchLabels, battle.Player.Bench, "Kosong", inspect: true);
 
             // inspection preview: keep a board-sourced panel in sync with live HP/art,
             // and drop it when the shown card leaves play (KO, promotion, retreat).
             RefreshBoardInspectPreview();
-
-            // ---- Pak Karta transformation action ----
-            bool canTransform = myTurn && battle.CanTransformPakKarta(out _);
-            RefreshTransformActionVisibility();
-            if (playerActiveView != null)
-                playerActiveView.SetEligible(canTransform);
 
             // ---- hand ----
             hand.Sync(battle.Player.Hand);
@@ -1154,6 +1403,11 @@ namespace TcgBattle.UI
                     v.SetEligible(v.Card != null && battle.CanSelectStartingActive(v.Card));
                 hand.Layout(); // lift eligible starting cards
             }
+
+            bool canDrag = setup || myTurn;
+            hand.SetDragEnabled(canDrag);
+            if (!canDrag)
+                ClearDropHighlights();
 
             // ---- visible deck piles: counts update before any draw ghost starts ----
             if (botDeckPile != null)
@@ -1185,7 +1439,7 @@ namespace TcgBattle.UI
                     break;
                 case Phase.PlayerTurn:
                     turnPillText.text = "GILIRANMU!";
-                    turnPillBg.color = Hex(0x35294F);
+                    turnPillBg.color = UiStyle.PanelRaised;
                     break;
                 case Phase.BotTurn:
                     turnPillText.text = "GILIRAN LAWAN!";
@@ -1210,7 +1464,7 @@ namespace TcgBattle.UI
             for (int i = 0; i < playerBenchViews.Length; i++)
             {
                 var bv = playerBenchViews[i];
-                bv.SetTarget(canRetreat && bv.Card != null && bv.Card.IsBattle, false);
+                bv.SetTarget(canRetreat && BattleRules.CanEnterActiveDirectly(bv.Card), false);
             }
 
             if (mundurLabel != null)
@@ -1271,20 +1525,19 @@ namespace TcgBattle.UI
         }
 
         /// <summary>
-        /// Board-sourced inspect previews (opponent active/bench) are refreshed in place
-        /// so damage, healing, and evolution always show the live card values. Hand and
-        /// transformation-choice previews are owned by their own hover handlers.
+        /// Board-sourced inspect previews (both sides' active/bench) are refreshed in
+        /// place so damage, healing, and evolution always show the live card values.
+        /// Hand previews are owned by HandController's hover handler.
         /// </summary>
         private void RefreshBoardInspectPreview()
         {
             if (handInspect == null || handInspect.CurrentCard == null || _inspectSourceView == null)
                 return;
-            if (!IsBotBoardView(_inspectSourceView))
+            if (!IsBoardView(_inspectSourceView))
                 return;
 
             var card = handInspect.CurrentCard;
-            if (card.FaceDown ||
-                (card != battle.Bot.Active && !battle.Bot.Bench.Contains(card)))
+            if (card.FaceDown || !BoardContains(card))
             {
                 _inspectSourceView = null;
                 handInspect.Hide();
@@ -1301,12 +1554,24 @@ namespace TcgBattle.UI
             handInspect.Show(card, _inspectSourceView.Root);
         }
 
-        private bool IsBotBoardView(CardView view)
+        private bool BoardContains(CardInstance card)
+        {
+            if (card == null)
+                return false;
+            return card == battle.Player.Active || battle.Player.Bench.Contains(card) ||
+                   card == battle.Bot.Active || battle.Bot.Bench.Contains(card);
+        }
+
+        private bool IsBoardView(CardView view)
         {
             if (view == null)
                 return false;
-            if (view == botActiveView)
+            if (view == playerActiveView || view == botActiveView)
                 return true;
+            if (playerBenchViews != null)
+                foreach (var benchView in playerBenchViews)
+                    if (benchView == view)
+                        return true;
             if (botBenchViews != null)
                 foreach (var benchView in botBenchViews)
                     if (benchView == view)
@@ -1314,14 +1579,14 @@ namespace TcgBattle.UI
             return false;
         }
 
-        private void BindSlot(CardView view, CardInstance card, CardDisplayMode mode, bool botInspect = false)
+        private void BindSlot(CardView view, CardInstance card, CardDisplayMode mode, bool inspect = false)
         {
             if (view == null)
                 return;
             view.Bind(card, mode);
             view.Clicked -= OnCardClicked;
             view.Clicked += OnCardClicked;
-            if (botInspect)
+            if (inspect)
             {
                 view.Hovered -= OnBoardHovered;
                 view.Hovered += OnBoardHovered;
@@ -1329,7 +1594,7 @@ namespace TcgBattle.UI
         }
 
         private void BindBenchRow(CardView[] views, GameObject[] frames, TMP_Text[] labels,
-            List<CardInstance> bench, string emptyLabel, bool botInspect = false)
+            List<CardInstance> bench, string emptyLabel, bool inspect = false)
         {
             for (int i = 0; i < views.Length; i++)
             {
@@ -1339,7 +1604,7 @@ namespace TcgBattle.UI
                 views[i].SetDimmed(card != null, 0.08f);
                 views[i].Clicked -= OnCardClicked;
                 views[i].Clicked += OnCardClicked;
-                if (botInspect)
+                if (inspect)
                 {
                     views[i].Hovered -= OnBoardHovered;
                     views[i].Hovered += OnBoardHovered;
@@ -1410,6 +1675,8 @@ namespace TcgBattle.UI
             var card = view.Card;
             if (card == null || battle == null || _combatBusy)
                 return;
+            if (hand != null && (hand.IsDragging || hand.ShouldIgnoreClick))
+                return; // a completed drag must not also count as a click
 
             // Hand card?
             if (hand.FindView(card) == view)
@@ -1418,6 +1685,8 @@ namespace TcgBattle.UI
                 {
                     if (battle.CanSelectStartingActive(card))
                         battle.ConfirmStartingActive(card);
+                    else if (BattleRules.IsEvolutionOnly(card))
+                        ShakeView(view, $"{card.DisplayName} hanya bisa dimainkan sebagai evolusi dari kartu dasarnya.");
                     else
                         ShakeView(view, "Pilih kartu bertarung sebagai kartu aktif.");
                     return;
@@ -1764,13 +2033,13 @@ namespace TcgBattle.UI
             var backing = ghost.AddComponent<Image>();
             backing.sprite = UiSpriteFactory.Rounded;
             backing.type = Image.Type.Sliced;
-            backing.color = new Color(0.12f, 0.09f, 0.19f, 1f);
+            backing.color = UiStyle.PanelInset;
             backing.raycastTarget = false;
             var art = MakeChildImage(ghostRt, "GhostArt", ArtLibrary.GetCardArt(card.ArtResource), Color.white,
                 Vector2.zero, size - new Vector2(10f, 10f));
             art.preserveAspect = true;
 
-            SpawnRing(view.Root, new Color(0.94f, 0.45f, 0.42f, 0.85f), 40f, 0.34f);
+            SpawnRing(view.Root, UiStyle.WithAlpha(UiStyle.Fire, 0.85f), 40f, 0.34f);
             SpawnFloatingLabel(slotRt != null ? slotRt : view.Root, "KNOCKOUT!", ColRed,
                 new Vector2(0f, 96f), new Vector2(360f, 84f), 38f, 0.82f);
 
@@ -1795,7 +2064,7 @@ namespace TcgBattle.UI
                     angle + (side == Side.Bot ? -8f : 8f) * ease);
                 float a = 1f - k;
                 art.color = new Color(1f, 1f, 1f, a);
-                backing.color = new Color(0.12f, 0.09f, 0.19f, a);
+                backing.color = UiStyle.WithAlpha(UiStyle.PanelInset, a);
                 yield return null;
             }
             if (ghost != null)
@@ -1832,23 +2101,6 @@ namespace TcgBattle.UI
                 _pendingPromoPlayer = card;
             else
                 _pendingPromoBot = card;
-        }
-
-        private void HandleTransformed(CardInstance card, string oldName, Side side)
-        {
-            if (card == null)
-                return;
-            var view = side == Side.Player ? playerActiveView : botActiveView;
-            if (view == null || view.Card == null)
-                return;
-            _pendingFormFx.Add(new PendingFormFx
-            {
-                Side = side,
-                NewCard = card,
-                OldVisual = view.CaptureVisual(),
-                Heading = "TRANSFORMASI!",
-                Path = $"{(oldName ?? "PAK KARTA").ToUpperInvariant()} \u2192 {card.DisplayName.ToUpperInvariant()}",
-            });
         }
 
         private bool HasPendingFormFx(CardInstance card)
@@ -2059,7 +2311,7 @@ namespace TcgBattle.UI
             var view = FindBoardView(card);
             if (view == null)
                 return;
-            SpawnRing(view.Root, new Color(0.94f, 0.45f, 0.42f, 0.85f), 34f, 0.32f);
+            SpawnRing(view.Root, UiStyle.WithAlpha(UiStyle.Fire, 0.85f), 34f, 0.32f);
             StartCoroutine(UiFx.Shake(view.Root, 7f, 0.24f));
             SpawnDamagePopup(view.Root, "HANCUR", ColRed);
         }
@@ -2192,7 +2444,7 @@ namespace TcgBattle.UI
             var chip = go.AddComponent<Image>();
             chip.sprite = UiSpriteFactory.Rounded;
             chip.type = Image.Type.Sliced;
-            chip.color = new Color(0.10f, 0.07f, 0.18f, small ? 0.5f : 0.45f);
+            chip.color = UiStyle.WithAlpha(UiStyle.PanelInset, small ? 0.5f : 0.45f);
             chip.raycastTarget = false;
 
             var tmp = MakeText("Text", rt, fontSize * k, color, TextAlignmentOptions.Center, bold: true);
@@ -2332,8 +2584,8 @@ namespace TcgBattle.UI
             yield return new WaitForSecondsRealtime(0.9f);
             if (statusPill == null || statusText == null)
                 yield break;
-            statusPill.color = ColIvory;
-            statusText.color = ColInk;
+            statusPill.color = UiStyle.StatusPill;
+            statusText.color = UiStyle.StatusText;
             statusText.text = statusBaseline;
             turnBannerRoutine = null;
         }
@@ -2349,10 +2601,10 @@ namespace TcgBattle.UI
             StopAllCoroutines();
             ResetHudTransforms();
             if (statusPill != null)
-                statusPill.color = ColIvory;
+                statusPill.color = UiStyle.StatusPill;
             if (statusText != null)
             {
-                statusText.color = ColInk;
+                statusText.color = UiStyle.StatusText;
                 statusText.text = statusBaseline;
             }
             turnBannerRoutine = null;
@@ -2366,7 +2618,11 @@ namespace TcgBattle.UI
             _pendingRetreatPlayer = _pendingRetreatBot = null;
             CloseTransformOverlayImmediate();
             if (hand != null)
-                hand.HideInspectPreview();   // inspection preview never outlives the battle
+            {
+                hand.SetDragEnabled(false);   // cancel any in-flight drag
+                hand.HideInspectPreview();    // inspection preview never outlives the battle
+            }
+            ClearDropHighlights();
             _inspectSourceView = null;       // board-sourced previews: forget the source slot too
 
             overOverlay.transform.SetAsLastSibling(); // result modal must sit above the board, HUD and hand
@@ -2431,8 +2687,8 @@ namespace TcgBattle.UI
         private static Color ElementColor(TcgBattle.Data.Element element)
         {
             return element == TcgBattle.Data.Element.Fire
-                ? Hex(0xF08A3C)
-                : Hex(0xA879E8);
+                ? UiStyle.Ember
+                : UiStyle.Dark;
         }
 
         /// <summary>
@@ -2734,16 +2990,17 @@ namespace TcgBattle.UI
             var img = go.GetComponent<Image>();
             img.sprite = UiSpriteFactory.Rounded;
             img.type = Image.Type.Sliced; // crisp corner radius at any slot size
-            img.color = new Color(0.08f, 0.05f, 0.13f, 0.55f);
+            img.color = UiStyle.SlotEmpty;
             img.raycastTarget = false;
 
-            var innerRing = MakeImage("InnerRing", UiSpriteFactory.RoundOutline, new Color(1f, 1f, 1f, 0.20f));
+            var innerRing = MakeImage("InnerRing", UiSpriteFactory.RoundOutline, UiStyle.SlotEmptyRing);
             innerRing.type = Image.Type.Sliced;
             var ringRt = innerRing.rectTransform;
             ringRt.SetParent(rt, false);
             Stretch(ringRt, 5, 5, 5, 5);
 
-            labelText = MakeText("EmptyLabel", rt, fontSize, new Color(1f, 1f, 1f, 0.62f), TextAlignmentOptions.Center, bold: true);
+            labelText = MakeText("EmptyLabel", rt, fontSize,
+                UiStyle.WithAlpha(UiStyle.IvoryMuted, 0.78f), TextAlignmentOptions.Center, bold: true);
             Stretch(labelText.rectTransform, 6, 4, 6, 4);
             labelText.text = label;
             return go;
@@ -2773,6 +3030,14 @@ namespace TcgBattle.UI
             img.color = bg;
             var btn = go.GetComponent<Button>();
 
+            // A thin rim ties flat buttons to the card frames without competing with
+            // ButtonFx's hover/press colour animation.
+            var outline = MakeImage(name + "Outline", UiSpriteFactory.RoundOutline,
+                UiStyle.ButtonOutline(bg));
+            outline.type = Image.Type.Sliced;
+            outline.rectTransform.SetParent(rt, false);
+            Stretch(outline.rectTransform, 1, 1, 1, 1);
+
             var text = MakeText("Label", rt, fontSize, fg, TextAlignmentOptions.Center, bold: true);
             Stretch(text.rectTransform, 8, 6, 8, 6);
             text.text = label;
@@ -2800,20 +3065,37 @@ namespace TcgBattle.UI
             var go = new GameObject("HandInspectPreview", typeof(RectTransform));
             var rt = (RectTransform)go.transform;
             rt.SetParent(safeRoot, false);
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(320f, 414f);
+            // Fixed right-side inspection panel: right edge of the safe area, vertically
+            // centred in the clear band between the bot HUD and the player HUD.
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, 0.497f);
+            rt.pivot = new Vector2(1f, 0.5f);
+            rt.sizeDelta = new Vector2(380f, 531f);
+            rt.anchoredPosition = new Vector2(-20f, 0f);
             handInspect = go.AddComponent<CardInspectPreview>();
+            handInspect.SetPanelWidth(380f);
             hand.SetInspectPreview(handInspect);
         }
 
         /// <summary>
-        /// Stage-3 addendum: opponent board cards (active + bench) feed the same inspect
-        /// preview. Face-down cards (still hidden during the coin reveal) never open the
-        /// preview, so nothing hidden is leaked, and hovering stays a passive mirror - no
-        /// selection or combat behavior change. The panel sits just above the hovered
-        /// card's top edge inside the safe area, i.e. in the bot zone for opponent cards,
-        /// where it never covers the action buttons (see CardInspectPreview.Reposition).
+        /// Give the fixed preview as much width as the right rail can spare without
+        /// covering the action row. At 1920x1080 it gets the full 350 px; narrower
+        /// aspects shrink it rather than overlapping the End Turn button.
+        /// </summary>
+        private void FitInspectPanel()
+        {
+            if (handInspect == null || safeRoot == null || endBtn == null)
+                return;
+            var ert = (RectTransform)endBtn.transform;
+            Vector3 rightWorld = ert.TransformPoint(new Vector3(ert.rect.xMax, ert.rect.center.y, 0f));
+            Vector2 rightLocal = safeRoot.InverseTransformPoint(rightWorld);
+            float available = safeRoot.rect.width * 0.5f - rightLocal.x;
+            handInspect.SetPanelWidth(available - 40f);
+        }
+
+        /// <summary>
+        /// Every face-up board card (both sides' active and bench) feeds the same fixed
+        /// right-side inspection panel. Face-down cards never open it, so no hidden
+        /// information is leaked; hovering stays a passive mirror with no gameplay effect.
         /// </summary>
         private void OnBoardHovered(CardView view, bool entered)
         {
@@ -2822,7 +3104,12 @@ namespace TcgBattle.UI
             if (entered)
             {
                 if (view.Card == null || view.Card.FaceDown)
+                {
+                    _inspectSourceView = null;
+                    if (handInspect != null)
+                        handInspect.Hide();
                     return;
+                }
                 _inspectSourceView = view;
                 if (handInspect != null)
                     handInspect.Show(view.Card, view.Root);
@@ -2876,11 +3163,6 @@ namespace TcgBattle.UI
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.offsetMin = new Vector2(margin, margin);
             rt.offsetMax = new Vector2(-margin, -margin);
-        }
-
-        private static Color Hex(int rgba)
-        {
-            return new Color32((byte)(rgba >> 16 & 0xFF), (byte)(rgba >> 8 & 0xFF), (byte)(rgba & 0xFF), 0xFF);
         }
     }
 }

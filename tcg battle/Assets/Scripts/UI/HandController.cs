@@ -37,6 +37,17 @@ namespace TcgBattle.UI
         private const float HoverTweenTime = 0.12f;
         private CardInspectPreview _inspectPreview;   // hover inspection overlay (built by BattleUI)
 
+        // drag-and-drop state (hand views only; board cards never get CardDragHandler)
+        private CardView _dragging;
+        private Vector2 _dragGrabOffset;
+        private float _lastDragEventTime;
+        private float _lastDragEndedTime = -10f;
+        private bool _dragEnabled = true;
+        private Action<CardView, Vector2> _dragStarted;
+        private Action<CardView, Vector2> _dragMoved;
+        private Func<CardView, Vector2, bool> _drop;
+        private Action _dragFinished;
+
         // reference-scale card sizing (canvas height 1080); cardWidth/cardHeight hold the
         // currently applied (scaled) values used for fan layout
         private Vector2 _baseCard;
@@ -104,6 +115,41 @@ namespace TcgBattle.UI
                 _inspectPreview.Hide();
         }
 
+        /// <summary>
+        /// BattleUI supplies the authoritative drop decision and the slot-highlight
+        /// callbacks. HandController only owns the visual drag/return behaviour.
+        /// </summary>
+        public void SetDragHandlers(Action<CardView, Vector2> started,
+            Action<CardView, Vector2> moved, Func<CardView, Vector2, bool> drop,
+            Action finished)
+        {
+            _dragStarted = started;
+            _dragMoved = moved;
+            _drop = drop;
+            _dragFinished = finished;
+        }
+
+        /// <summary>
+        /// Drag is legal only during setup/player turn. Disabling it also cancels an
+        /// in-flight drag so a turn change or restart can never strand a lifted card.
+        /// </summary>
+        public void SetDragEnabled(bool enabled)
+        {
+            if (_dragEnabled == enabled)
+                return;
+            _dragEnabled = enabled;
+            foreach (var v in _views)
+            {
+                if (v == null)
+                    continue;
+                var drag = v.GetComponent<CardDragHandler>();
+                if (drag != null)
+                    drag.enabled = enabled;
+            }
+            if (!enabled && _dragging != null)
+                CancelDrag();
+        }
+
         /// <summary>Sync views with the hand list; keeps existing views alive when possible.</summary>
         public void Sync(List<CardInstance> hand)
         {
@@ -114,6 +160,11 @@ namespace TcgBattle.UI
             {
                 if (hand.Contains(_views[i].Card))
                     continue;
+                if (ReferenceEquals(_dragging, _views[i]))
+                {
+                    _dragging = null;
+                    _dragFinished?.Invoke();
+                }
                 StopTween(_views[i].Root);
                 Destroy(_views[i].gameObject);
                 _views.RemoveAt(i);
@@ -135,6 +186,12 @@ namespace TcgBattle.UI
                 view.Bind(card, CardDisplayMode.Hand);
                 view.Clicked += c => _onClick?.Invoke(c);
                 view.Hovered += OnViewHover;
+                var drag = view.gameObject.AddComponent<CardDragHandler>();
+                drag.Bind(view);
+                drag.Started += OnViewDragStarted;
+                drag.Moved += OnViewDragged;
+                drag.Ended += OnViewDragEnded;
+                drag.enabled = _dragEnabled;
                 _views.Add(view);
             }
 
@@ -144,7 +201,23 @@ namespace TcgBattle.UI
                 _views[i].Bind(hand[i], CardDisplayMode.Hand);
                 _views[i].SetSelected(false);
                 _views[i].Root.SetAsLastSibling();
+
+                var drag = _views[i].GetComponent<CardDragHandler>();
+                if (drag == null)
+                {
+                    drag = _views[i].gameObject.AddComponent<CardDragHandler>();
+                    drag.Bind(_views[i]);
+                    drag.Started += OnViewDragStarted;
+                    drag.Moved += OnViewDragged;
+                    drag.Ended += OnViewDragEnded;
+                }
+                drag.enabled = _dragEnabled;
             }
+
+            // A rebind during an in-flight drag must not put the lifted card back
+            // under its neighbours.
+            if (_dragging != null)
+                _dragging.Root.SetAsLastSibling();
 
             // Bind reset per-card state; if the pointer is still on the same view, re-assert
             // hover (visuals + raise) before the layout below retargets the fan.
@@ -190,6 +263,8 @@ namespace TcgBattle.UI
         {
             if (view == null || view.Mode != CardDisplayMode.Hand || !_views.Contains(view))
                 return; // bench/active cards handle their own hover feedback later
+            if (_dragging != null)
+                return; // inspection is suspended for the whole drag gesture
 
             if (entered)
             {
@@ -212,6 +287,105 @@ namespace TcgBattle.UI
                     _inspectPreview.HideIfCard(view.Card);
             }
             Layout(true, HoverTweenTime);
+        }
+
+        public bool IsDragging => _dragging != null;
+
+        /// <summary>
+        /// Suppresses the synthetic click that can follow a drag release in the same
+        /// frame. The gameplay action must be invoked exactly once.
+        /// </summary>
+        public bool ShouldIgnoreClick => Time.unscaledTime - _lastDragEndedTime < 0.2f;
+
+        private void Update()
+        {
+            // A release outside the window may never reach OnEndDrag. The short grace
+            // period gives the EventSystem time to deliver a normal drop first, so a
+            // valid release is never converted into a cancel.
+            if (_dragging != null && !Input.GetMouseButton(0) &&
+                Time.unscaledTime - _lastDragEventTime > 0.2f)
+                CancelDrag();
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (!hasFocus && _dragging != null)
+                CancelDrag();
+        }
+
+        private void OnViewDragStarted(CardView view, UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            if (!_dragEnabled || _dragging != null || view == null ||
+                view.Mode != CardDisplayMode.Hand || !_views.Contains(view))
+                return;
+
+            _dragging = view;
+            _lastDragEventTime = Time.unscaledTime;
+            StopTween(view.Root);
+            if (_hovered == view)
+                _hovered = null;
+            if (_inspectPreview != null)
+                _inspectPreview.Hide();
+
+            // Keep the fan order for every other card, then raise the dragged one.
+            RestoreFanOrder();
+            view.Root.SetAsLastSibling();
+            view.SetHovered(false);
+            view.Root.localRotation = Quaternion.identity;
+            view.Root.localScale = Vector3.one * 1.07f;
+            view.Root.anchoredPosition += new Vector2(0f, 8f);
+
+            _dragGrabOffset = Vector2.zero;
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    _rect, eventData.position, eventData.pressEventCamera, out var local))
+                _dragGrabOffset = view.Root.anchoredPosition - local;
+
+            _dragStarted?.Invoke(view, eventData.position);
+            _dragMoved?.Invoke(view, eventData.position);
+        }
+
+        private void OnViewDragged(CardView view, UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            if (_dragging != view)
+                return;
+            _lastDragEventTime = Time.unscaledTime;
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    _rect, eventData.position, eventData.pressEventCamera, out var local))
+                view.Root.anchoredPosition = local + _dragGrabOffset;
+            view.Root.SetAsLastSibling();
+            _dragMoved?.Invoke(view, eventData.position);
+        }
+
+        private void OnViewDragEnded(CardView view, UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            if (_dragging != view)
+                return;
+
+            _dragging = null;
+            _lastDragEndedTime = Time.unscaledTime;
+            _dragFinished?.Invoke();
+
+            bool accepted = _drop != null && _drop(view, eventData.position);
+            if (!accepted || (_views.Contains(view) && view.Card != null))
+            {
+                RestoreFanOrder();
+                Layout(true);
+            }
+        }
+
+        private void CancelDrag()
+        {
+            if (_dragging == null)
+                return;
+            var view = _dragging;
+            _dragging = null;
+            _lastDragEndedTime = Time.unscaledTime;
+            _dragFinished?.Invoke();
+            if (view != null && _views.Contains(view))
+            {
+                RestoreFanOrder();
+                Layout(true);
+            }
         }
 
         /// <summary>Re-asserts hand order in the sibling stack (SetAsLastSibling in order).</summary>
@@ -242,6 +416,8 @@ namespace TcgBattle.UI
             for (int i = 0; i < n; i++)
             {
                 var v = _views[i];
+                if (ReferenceEquals(v, _dragging))
+                    continue; // the drag gesture owns this card's pose
                 var rt = v.Root;
                 rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
                 rt.pivot = new Vector2(0.5f, 0.5f);

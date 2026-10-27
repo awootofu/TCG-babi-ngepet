@@ -16,10 +16,10 @@ namespace TcgBattle.UI
     /// </summary>
     public class CardFormFx : MonoBehaviour
     {
-        private static readonly Color ColGoldBright = Hex(0xF2C14E);
-        private static readonly Color ColGoldSoft = new Color(0.95f, 0.76f, 0.35f, 0.95f);
-        private static readonly Color ColIvory = Hex(0xF2EADA);
-        private static readonly Color ColBanner = new Color(0.10f, 0.07f, 0.18f, 0.94f);
+        private static readonly Color ColGoldBright = UiStyle.GoldBright;
+        private static readonly Color ColGoldSoft = UiStyle.WithAlpha(UiStyle.Gold, 0.85f);
+        private static readonly Color ColIvory = UiStyle.Ivory;
+        private static readonly Color ColBanner = UiStyle.WithAlpha(UiStyle.Panel, 0.94f);
 
         private CardView _target;
         private CardInstance _expectedCard;
@@ -92,7 +92,7 @@ namespace TcgBattle.UI
             var slot = _target.Root.parent as RectTransform;
             _root.anchoredPosition = layer.InverseTransformPoint((slot != null ? slot : _target.Root).position);
 
-            _glow = MakeImage(_root, "Glow", UiSpriteFactory.SoftShadow,
+            _glow = MakeImage(_root, "Glow", UiSpriteFactory.SoftGlow,
                 WithA(accent, 0f), cardSize + new Vector2(170f, 170f) * _k, Vector2.zero);
             _outline = MakeImage(_root, "GlowRing", UiSpriteFactory.RoundOutline,
                 WithA(ColGoldSoft, 0f), cardSize + new Vector2(24f, 24f) * _k, Vector2.zero);
@@ -258,7 +258,7 @@ namespace TcgBattle.UI
         private void SpawnFlash()
         {
             Vector2 cardSize = _target.Root.rect.size;
-            var soft = MakeImage(_root, "FormFlash", UiSpriteFactory.SoftShadow,
+            var soft = MakeImage(_root, "FormFlash", UiSpriteFactory.SoftGlow,
                 new Color(1f, 0.92f, 0.62f, 0.85f),
                 cardSize + new Vector2(180f, 180f) * _k, Vector2.zero);
             soft.transform.SetAsLastSibling();
@@ -390,11 +390,6 @@ namespace TcgBattle.UI
         private static Color WithA(Color c, float a)
         {
             return new Color(c.r, c.g, c.b, a);
-        }
-
-        private static Color Hex(int rgba)
-        {
-            return new Color32((byte)(rgba >> 16 & 0xFF), (byte)(rgba >> 8 & 0xFF), (byte)(rgba & 0xFF), 0xFF);
         }
     }
 }

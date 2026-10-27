@@ -16,7 +16,9 @@ namespace TcgBattle.UI
     /// </summary>
     public class BotHandFan : MonoBehaviour
     {
-        private const float FanOpacity = 0.32f;
+        // Kept deliberately faint, but lifted a little so the generic backs still read
+        // as dark-on-dark against the refined bot terrace.
+        private const float FanOpacity = 0.40f;
         private const float DrawTime = 0.32f;
         private const float PlayTime = 0.32f;
 

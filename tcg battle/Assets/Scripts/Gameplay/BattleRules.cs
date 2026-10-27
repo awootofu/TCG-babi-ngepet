@@ -7,11 +7,11 @@ namespace TcgBattle.Gameplay
     public static class BattleRules
     {
         public const int BenchLimit = 3;
-        public const int HandLimit = 7;
+        public const int HandLimit = 10;
         public const int StartingHandSize = 5;
         public const int DrawPerTurn = 1;
         public const int EnergyPerTurn = 1;
-        public const int EnergyCap = 9;
+        public const int EnergyCap = 10;
         public const int PointsToWin = 3;
 
         // Warga Desa > Pasukan Obor > Amukan Warga. The two evolved battle cards
@@ -20,17 +20,12 @@ namespace TcgBattle.Gameplay
         public const string WargaEvolution1Id = "PO";
         public const string WargaEvolution2Id = "AW";
 
-        // Pak Karta's free transformation line. Mbok Sumi is the bench catalyst;
-        // Babi Ngepet / Siluman Babi are the two legal replacement forms.
+        // Pak Karta's evolution line: Pak Karta > Babi Ngepet > Siluman Babi.
+        // Every step consumes the matching evolution card from hand.
         public const string PakKartaId = "PK";
         public const string MbokSumiId = "MS";
         public const string BabiNgepetId = "BN";
         public const string SilumanBabiId = "SB";
-
-        public static bool IsPakKartaTransformForm(string cardId)
-        {
-            return cardId == BabiNgepetId || cardId == SilumanBabiId;
-        }
 
         /// <summary>
         /// Evolution keeps the damage already taken, measured against the old card's
@@ -53,6 +48,10 @@ namespace TcgBattle.Gameplay
                 return WargaBasicId;
             if (cardId == WargaEvolution2Id)
                 return WargaEvolution1Id;
+            if (cardId == BabiNgepetId)
+                return PakKartaId;
+            if (cardId == SilumanBabiId)
+                return BabiNgepetId;
             return null;
         }
 
@@ -62,6 +61,10 @@ namespace TcgBattle.Gameplay
                 return WargaEvolution1Id;
             if (cardId == WargaEvolution1Id)
                 return WargaEvolution2Id;
+            if (cardId == PakKartaId)
+                return BabiNgepetId;
+            if (cardId == BabiNgepetId)
+                return SilumanBabiId;
             return null;
         }
 
@@ -71,8 +74,9 @@ namespace TcgBattle.Gameplay
         }
 
         /// <summary>
-        /// Cards that may be put into the active slot without an evolution. Dark
-        /// battle cards and the basic Warga Desa qualify; PO and AW do not.
+        /// Cards that may be put into the active slot without an evolution. Basic
+        /// cards qualify; PO/AW and BN/SB are evolution-only and must be played from
+        /// hand onto their matching source card.
         /// </summary>
         public static bool CanEnterActiveDirectly(CardInstance card)
         {

@@ -39,8 +39,6 @@ namespace TcgBattle.Gameplay
         public event Action<Side> OnEnergyChanged;
         public event Action<CardInstance, Side> OnSupportUsed;  // support consumed (one-shot or Tumbal Anak shield)
         public event Action<CardInstance, CardInstance, Side> OnEvolved; // old active, new active, side
-        public event Action<CardInstance, Side> OnTransformed;           // form committed (legacy signature)
-        public event Action<CardInstance, string, Side> OnTransformedFrom; // new active, old display name, side
         public event Action<CardInstance, Side> OnSupportDestroyed; // Kucing Liar killing bench MS
         public event Action<bool> OnCoinFlipped;                // playerStartsFirst
         public event Action<Side> OnGameOver;                   // winner
@@ -200,9 +198,12 @@ namespace TcgBattle.Gameplay
             Player.HasAttackedThisTurn = false;
             Player.UsedFreeRetreatViaMbokSumi = false;
             Player.NextAttackBonus = 0;
-            DrawInternal(Player);
-            Player.Energy += BattleRules.EnergyPerTurn;
-            OnTurnStartedAnnounce(Side.Player, Player);
+            int energyBefore = Player.Energy;
+            bool discarded;
+            bool drew = DrawInternal(Player, out discarded);
+            Player.Energy = Mathf.Min(BattleRules.EnergyCap,
+                Player.Energy + BattleRules.EnergyPerTurn);
+            OnTurnStartedAnnounce(Side.Player, Player.Energy - energyBefore, drew, discarded);
             OnStateChanged?.Invoke();
         }
 
@@ -212,19 +213,32 @@ namespace TcgBattle.Gameplay
             Bot.HasAttackedThisTurn = false;
             Bot.UsedFreeRetreatViaMbokSumi = false;
             Bot.NextAttackBonus = 0;
-            DrawInternal(Bot);
-            Bot.Energy += BattleRules.EnergyPerTurn;
-            OnTurnStartedAnnounce(Side.Bot, Bot);
+            int energyBefore = Bot.Energy;
+            bool discarded;
+            bool drew = DrawInternal(Bot, out discarded);
+            Bot.Energy = Mathf.Min(BattleRules.EnergyCap,
+                Bot.Energy + BattleRules.EnergyPerTurn);
+            OnTurnStartedAnnounce(Side.Bot, Bot.Energy - energyBefore, drew, discarded);
             OnStateChanged?.Invoke();
         }
 
-        private void OnTurnStartedAnnounce(Side side, PlayerState p)
+        private void OnTurnStartedAnnounce(Side side, int energyGained, bool drew, bool discarded)
         {
             OnTurnEvent?.Invoke(side);
             OnEnergyChanged?.Invoke(side);
-            SetStatus(side == Side.Player
-                ? $"Giliranmu! +{BattleRules.EnergyPerTurn} energi, 1 kartu diambil."
-                : "Giliran Bot...");
+            if (side == Side.Bot)
+            {
+                SetStatus("Giliran Bot...");
+                return;
+            }
+
+            string energy = energyGained > 0
+                ? $"+{energyGained} energi"
+                : $"energi penuh ({BattleRules.EnergyCap})";
+            string draw = drew
+                ? "1 kartu diambil"
+                : discarded ? "tangan penuh, kartu dibuang" : "dek habis";
+            SetStatus($"Giliranmu! {energy}, {draw}.");
         }
 
         private event Action<Side> OnTurnEvent;
@@ -328,9 +342,8 @@ namespace TcgBattle.Gameplay
             string source = BattleRules.EvolutionSource(card.CardId);
             if (p.Active.CardId != source)
             {
-                string sourceName = source == BattleRules.WargaBasicId
-                    ? "Warga Desa"
-                    : "Pasukan Obor";
+                var sourceDef = Database.GetBattleCard(source);
+                string sourceName = sourceDef != null ? sourceDef.displayName : source;
                 error = $"{card.DisplayName} hanya bisa berevolusi dari {sourceName}.";
                 return false;
             }
@@ -385,82 +398,21 @@ namespace TcgBattle.Gameplay
         }
 
         /// <summary>
-        /// Pak Karta may transform for free while he is the player's active card and
-        /// Mbok Sumi is on the player's bench. The transformation does not consume
-        /// Mbok Sumi, energy, the turn, or the once-per-turn attack.
+        /// Transformation is retired. Pak Karta now evolves through the card line
+        /// Pak Karta > Babi Ngepet > Siluman Babi by playing the matching card from hand,
+        /// using the same authoritative evolution path as the Warga line.
         /// </summary>
         public bool CanTransformPakKarta(out string error)
         {
-            error = null;
-            if (Phase != Phase.PlayerTurn)
-            {
-                error = "Bukan giliranmu.";
-                return false;
-            }
-            if (Player.Active == null)
-            {
-                error = "Tidak ada kartu aktif.";
-                return false;
-            }
-            if (Player.Active.CardId != BattleRules.PakKartaId)
-            {
-                error = "Hanya Pak Karta yang bisa bertransformasi.";
-                return false;
-            }
-            if (Player.Active.IsKnockedOut)
-            {
-                error = "Kartu aktif sudah pingsan.";
-                return false;
-            }
-            if (!BenchContainsMbokSumi(Player))
-            {
-                error = "Mbok Sumi harus ada di bangku untuk bertransformasi.";
-                return false;
-            }
-            return true;
+            error = "Pak Karta sekarang berevolusi: mainkan Babi Ngepet atau Siluman Babi dari tangan.";
+            return false;
         }
 
-        /// <summary>
-        /// Replace the active Pak Karta instance in place with Babi Ngepet or
-        /// Siluman Babi. The same CardInstance stays in the active slot, so every
-        /// existing reference (UI, score, board) agrees on the transformed card.
-        /// Transformation starts the new form at its printed max HP; the assignment
-        /// only defines damage carry-over for Warga evolution.
-        /// </summary>
+        /// <summary>Legacy entry point kept inert so no caller can bypass evolution.</summary>
         public bool TransformPakKarta(string formId)
         {
-            if (!CanTransformPakKarta(out var error))
-            {
-                if (error != null)
-                    SetStatus(error);
-                return false;
-            }
-            if (!BattleRules.IsPakKartaTransformForm(formId))
-            {
-                SetStatus("Pilih Babi Ngepet atau Siluman Babi.");
-                return false;
-            }
-
-            var def = Database.GetBattleCard(formId);
-            if (def == null)
-            {
-                SetStatus("Data wujud transformasi tidak ditemukan.");
-                return false;
-            }
-
-            var active = Player.Active;
-            string oldName = active.DisplayName;
-            active.CardId = def.id;
-            active.Battle = def;
-            active.Support = null;
-            active.CurrentHp = def.maxHp;
-            active.FaceDown = false;
-
-            SetStatus($"{oldName} berubah menjadi {def.displayName}!");
-            OnTransformed?.Invoke(active, Side.Player);
-            OnTransformedFrom?.Invoke(active, oldName, Side.Player);
-            OnStateChanged?.Invoke();
-            return true;
+            SetStatus("Pak Karta sekarang berevolusi: mainkan Babi Ngepet atau Siluman Babi dari tangan.");
+            return false;
         }
 
         /// <summary>
@@ -982,14 +934,31 @@ namespace TcgBattle.Gameplay
             }
         }
 
-        private void DrawInternal(PlayerState p)
+        private bool DrawInternal(PlayerState p)
         {
+            bool discarded;
+            return DrawInternal(p, out discarded);
+        }
+
+        /// <summary>
+        /// Draw the top card. A full ten-card hand still consumes the deck card, but the
+        /// new card is discarded (no hand entry, no draw event) and the excess is lost.
+        /// </summary>
+        private bool DrawInternal(PlayerState p, out bool discarded)
+        {
+            discarded = false;
             if (p.Deck.Count == 0)
-                return;
+                return false;
             var card = p.Deck[p.Deck.Count - 1];
             p.Deck.RemoveAt(p.Deck.Count - 1);
+            if (p.Hand.Count >= BattleRules.HandLimit)
+            {
+                discarded = true;
+                return false;
+            }
             p.Hand.Add(card);
             OnDrawn?.Invoke(card, p.Side);
+            return true;
         }
 
         private void EndGame(Side winner)

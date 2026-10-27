@@ -18,7 +18,8 @@ namespace TcgBattle.Data
         public int maxHp;
         public int attack;
         public string attackName;
-        public string attackEffectText;     // effect note shown on-card in the art
+        public string attackEffectText;     // effect of this attack, when the data carries one
+        public string passiveText;          // battle-card passive/special ability (not the attack)
         public int attackEnergyCost;
         public int retreatEnergyCost;
     }
@@ -31,6 +32,7 @@ namespace TcgBattle.Data
         public string artResource;
         public SupportEffect effect;
         public int effectValue;             // damage / bonus amount for single-shot cards
+        public string description;          // concise Indonesian effect text for the preview
     }
 
     [Serializable]
@@ -64,6 +66,7 @@ namespace TcgBattle.Data
                 id = "PK", displayName = "Pak Karta", element = Element.Dark,
                 artResource = "Cards/Pak Karta", maxHp = 150, attack = 20,
                 attackName = "Pikiran Jahat", attackEffectText = "",
+                passiveText = "",
                 attackEnergyCost = 1, retreatEnergyCost = 1,
             },
             new BattleCardDef
@@ -103,21 +106,25 @@ namespace TcgBattle.Data
             {
                 id = "MS", displayName = "Mbok Sumi", artResource = "Cards/Mbok Sumi",
                 effect = SupportEffect.MbokSumiBenchPassive, effectValue = 0,
+                description = "Selama di bangku: mundur gratis sekali per giliran.",
             },
             new SupportCardDef
             {
                 id = "TA", displayName = "Tumbal Anak", artResource = "Cards/Anak",
                 effect = SupportEffect.TumbalAnakHandPassive, effectValue = 0,
+                description = "Saat di tangan: menangkal satu serangan Api ke Babi Ngepet. Satu kartu Tumbal Anak dikorbankan.",
             },
             new SupportCardDef
             {
                 id = "KL", displayName = "Kucing Liar", artResource = "Cards/Kucing",
                 effect = SupportEffect.KucingLiarSingleShot, effectValue = 40,
+                description = "Saat dimainkan: 40 damage ke Mbok Sumi di bangku lawan hingga keluar dari permainan. Hanya jika lawan punya Mbok Sumi di bangku.",
             },
             new SupportCardDef
             {
                 id = "PJ", displayName = "Punarma Jumat Legi", artResource = "Cards/Punarma",
                 effect = SupportEffect.PunarmaJumatLegiSingleShot, effectValue = 50,
+                description = "Saat dimainkan: serangan berikutnya +50 damage hingga akhir giliran. Hanya jika Babi Ngepet aktif di sisi lawan.",
             },
         };
 
@@ -165,6 +172,7 @@ namespace TcgBattle.Data
         [TextArea(3, 8)] public string rulesText =
             "Fire deals 2x damage to Dark cards. Dark deals 1x damage to Fire.\n" +
             "Each turn: draw one card and gain one energy.\n" +
+            "Maximum 10 energy; extra energy is lost. Maximum 10 cards in hand; extra draws are discarded.\n" +
             "Attacks and retreats cost energy. Knock out a card to score.\n" +
             "First to 3 points wins.";
 
