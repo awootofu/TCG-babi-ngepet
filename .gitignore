@@ -28,6 +28,10 @@
 sysinfo.txt
 *.pid
 
+# AI tool configs (keep local only)
+opencode.json
+.mcp.json
+
 # Build and packaging outputs
 *.apk
 *.aab
