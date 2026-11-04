@@ -9,11 +9,16 @@ namespace TcgBattle.Gameplay
     /// All battle state transitions. Pure logic: raises events for the UI and bot,
     /// validates every action, and never touches GameObjects.
     /// Support card effects (transcribed from the card artwork):
-    ///   - Mbok Sumi  (bench) : while she sits on your bench, your retreats are free.
-    ///   - Tumbal Anak(hand) : one copy is consumed to nullify a Fire attack on your Babi Ngepet.
-    ///   - Kucing Liar(skillo) : when played, deals 40 damage to the opponent's bench Mbok Sumi.
+    ///   - Mbok Sumi  (bench, 50 HP) : while she sits on your bench, Pak Karta may
+    ///                                 evolve into Babi Ngepet. Babi Ngepet then
+    ///                                 evolves into Siluman Babi as a normal step.
+    ///   - Tumbal Anak(hand) : one copy is consumed so Babi Ngepet's next attack
+    ///                        always steals 1 energy (the coin flip is guaranteed).
+    ///   - Kucing Liar(skillo) : when played, deals 40 damage to the opponent's
+    ///                           bench Mbok Sumi (she has 50 HP, so one hit is not a KO).
     ///   - Punarma    (skillo) : when played (only if opposing active is Babi Ngepet),
-    ///                           your next attack this turn deals +50 damage.
+    ///                           the next Warga attack deals +50 damage; it persists
+    ///                           until that attack happens.
     /// </summary>
     public class BattleManager
     {
@@ -24,6 +29,8 @@ namespace TcgBattle.Gameplay
         public Phase Phase { get; private set; } = Phase.Setup;
         public bool PlayerStartsFirst { get; private set; }
         public string StatusMessage { get; private set; } = "";
+        public bool LastBabiNgepetStealHeads { get; private set; }
+        public bool LastBabiNgepetStealGuaranteed { get; private set; }
 
         // --- events consumed by the UI layer and bot controller ---
         public event Action<string> OnStatus;
@@ -37,9 +44,12 @@ namespace TcgBattle.Gameplay
         public event Action<Side, int> OnScoreChanged;          // side, new points
         public event Action<CardInstance, Side> OnDrawn;
         public event Action<Side> OnEnergyChanged;
-        public event Action<CardInstance, Side> OnSupportUsed;  // support consumed (one-shot or Tumbal Anak shield)
+        public event Action<CardInstance, Side> OnSupportUsed;  // support consumed (one-shot or Tumbal Anak guarantee)
         public event Action<CardInstance, CardInstance, Side> OnEvolved; // old active, new active, side
-        public event Action<CardInstance, Side> OnSupportDestroyed; // Kucing Liar killing bench MS
+        public event Action<CardInstance, Side> OnSupportDestroyed; // bench support reaching 0 HP
+        public event Action<CardInstance, Side, int> OnSupportDamaged; // bench support, side, damage
+        public event Action<CardInstance, Side, int> OnSelfDamaged;    // recoil, side, damage
+        public event Action<CardInstance, Side, int> OnHealed;         // in-play heal, side, amount
         public event Action<bool> OnCoinFlipped;                // playerStartsFirst
         public event Action<Side> OnGameOver;                   // winner
 
@@ -196,8 +206,7 @@ namespace TcgBattle.Gameplay
         {
             Phase = Phase.PlayerTurn;
             Player.HasAttackedThisTurn = false;
-            Player.UsedFreeRetreatViaMbokSumi = false;
-            Player.NextAttackBonus = 0;
+            HealActiveAtTurnStart(Player);
             int energyBefore = Player.Energy;
             bool discarded;
             bool drew = DrawInternal(Player, out discarded);
@@ -211,8 +220,7 @@ namespace TcgBattle.Gameplay
         {
             Phase = Phase.BotTurn;
             Bot.HasAttackedThisTurn = false;
-            Bot.UsedFreeRetreatViaMbokSumi = false;
-            Bot.NextAttackBonus = 0;
+            HealActiveAtTurnStart(Bot);
             int energyBefore = Bot.Energy;
             bool discarded;
             bool drew = DrawInternal(Bot, out discarded);
@@ -253,7 +261,6 @@ namespace TcgBattle.Gameplay
         {
             if (Phase != Phase.PlayerTurn)
                 return;
-            Player.NextAttackBonus = 0;
             BeginBotTurn();
         }
 
@@ -286,7 +293,7 @@ namespace TcgBattle.Gameplay
             }
             if (card.IsSupport && card.Support.effect == Data.SupportEffect.TumbalAnakHandPassive)
             {
-                error = "Tumbal Anak tetap di tangan dan dikorbankan saat melindungi Babi Ngepet.";
+                error = "Tumbal Anak tetap di tangan dan dikorbankan saat Babi Ngepet menyerang.";
                 return false;
             }
             if (BattleRules.IsEvolutionOnly(card))
@@ -336,6 +343,11 @@ namespace TcgBattle.Gameplay
             if (p.Active.IsKnockedOut)
             {
                 error = "Kartu aktif sudah pingsan.";
+                return false;
+            }
+            if (card.CardId == BattleRules.BabiNgepetId && !BenchContainsMbokSumi(p))
+            {
+                error = "Mbok Sumi harus ada di bangku agar Pak Karta bisa berevolusi.";
                 return false;
             }
 
@@ -398,28 +410,28 @@ namespace TcgBattle.Gameplay
         }
 
         /// <summary>
-        /// Transformation is retired. Pak Karta now evolves through the card line
-        /// Pak Karta > Babi Ngepet > Siluman Babi by playing the matching card from hand,
-        /// using the same authoritative evolution path as the Warga line.
+        /// Legacy transform entry point. Pak Karta now evolves only into Babi Ngepet;
+        /// Babi Ngepet then evolves into Siluman Babi. Kept so older callers fail
+        /// cleanly instead of retaining a direct form-selection action.
         /// </summary>
         public bool CanTransformPakKarta(out string error)
         {
-            error = "Pak Karta sekarang berevolusi: mainkan Babi Ngepet atau Siluman Babi dari tangan.";
+            error = "Pak Karta berevolusi menjadi Babi Ngepet. Mainkan kartu Babi Ngepet dari tangan.";
             return false;
         }
 
-        /// <summary>Legacy entry point kept inert so no caller can bypass evolution.</summary>
+        /// <summary>Legacy transform entry point; Pak Karta uses the evolution path now.</summary>
         public bool TransformPakKarta(string formId)
         {
-            SetStatus("Pak Karta sekarang berevolusi: mainkan Babi Ngepet atau Siluman Babi dari tangan.");
+            SetStatus("Pak Karta berevolusi menjadi Babi Ngepet. Mainkan kartu Babi Ngepet dari tangan.");
             return false;
         }
 
         /// <summary>
         /// Playing a card from hand: battle cards and Mbok Sumi go to the bench;
-        /// Tumbal Anak stays in hand as a shield and is consumed when it protects
-        /// Babi Ngepet; one-shot supports take effect and leave play. Pasukan Obor /
-        /// Amukan Warga instead evolve the matching active card.
+        /// Tumbal Anak stays in hand and is consumed when Babi Ngepet attacks;
+        /// one-shot supports take effect and leave play. Pasukan Obor / Amukan Warga
+        /// instead evolve the matching active card.
         /// </summary>
         public bool PlayCardFromHand(CardInstance card)
         {
@@ -445,7 +457,7 @@ namespace TcgBattle.Gameplay
 
             if (card.IsSupport && card.Support.effect == Data.SupportEffect.TumbalAnakHandPassive)
             {
-                SetStatus("Tumbal Anak tetap di tangan dan dikorbankan saat melindungi Babi Ngepet.");
+                SetStatus("Tumbal Anak tetap di tangan dan dikorbankan saat Babi Ngepet menyerang.");
                 return false;
             }
 
@@ -487,7 +499,7 @@ namespace TcgBattle.Gameplay
                 error = "Tidak ada kartu bangku yang bisa menjadi aktif.";
                 return false;
             }
-            if (!HasFreeRetreat(Player) && Player.Energy < Player.Active.RetreatCost)
+            if (Player.Energy < Player.Active.RetreatCost)
             {
                 error = $"Butuh {Player.Active.RetreatCost} energi untuk mundur.";
                 return false;
@@ -514,10 +526,7 @@ namespace TcgBattle.Gameplay
             var swap = FindFirstLegalActiveCardInList(Player.Bench);
             if (swap == null)
                 return false;
-            if (!HasFreeRetreat(Player))
-                Player.Energy -= Player.Active.RetreatCost;
-            else
-                Player.UsedFreeRetreatViaMbokSumi = true;
+            Player.Energy -= Player.Active.RetreatCost;
             var oldActive = Player.Active;
             Player.Bench.Remove(swap);
             Player.Active = swap;
@@ -548,10 +557,7 @@ namespace TcgBattle.Gameplay
                     SetStatus(error);
                 return false;
             }
-            if (!HasFreeRetreat(Player))
-                Player.Energy -= Player.Active.RetreatCost;
-            else
-                Player.UsedFreeRetreatViaMbokSumi = true;
+            Player.Energy -= Player.Active.RetreatCost;
             var oldActive = Player.Active;
             Player.Bench.Remove(target);
             Player.Active = target;
@@ -633,12 +639,9 @@ namespace TcgBattle.Gameplay
             var swap = FindFirstLegalActiveCardInList(Bot.Bench);
             if (swap == null)
                 return false;
-            if (!HasFreeRetreat(Bot) && Bot.Energy < Bot.Active.RetreatCost)
+            if (Bot.Energy < Bot.Active.RetreatCost)
                 return false;
-            if (!HasFreeRetreat(Bot))
-                Bot.Energy -= Bot.Active.RetreatCost;
-            else
-                Bot.UsedFreeRetreatViaMbokSumi = true;
+            Bot.Energy -= Bot.Active.RetreatCost;
             var oldActive = Bot.Active;
             Bot.Bench.Remove(swap);
             Bot.Active = swap;
@@ -677,7 +680,7 @@ namespace TcgBattle.Gameplay
                 return false;
             if (!BenchHasLegalActiveCard(Bot))
                 return false;
-            return HasFreeRetreat(Bot) || Bot.Energy >= Bot.Active.RetreatCost;
+            return Bot.Energy >= Bot.Active.RetreatCost;
         }
 
         public void BotEndTurn()
@@ -730,44 +733,18 @@ namespace TcgBattle.Gameplay
             var atkCard = attacker.Active;
             var defCard = defender.Active;
 
-            // Tumbal Anak hand-passive: one copy is consumed to shield Babi Ngepet
-            // from a Fire attack. Additional copies remain in hand for later attacks.
-            var shieldCard = atkCard.Element == Data.Element.Fire && defCard.CardId == "BN"
-                ? FindHandSupport(defender, Data.SupportEffect.TumbalAnakHandPassive)
-                : null;
-            bool shielded = shieldCard != null;
-            if (shielded)
-            {
-                defender.Hand.Remove(shieldCard);
-                OnSupportUsed?.Invoke(shieldCard, defender.Side);
-            }
-
             int bonus = attacker.NextAttackBonus;
             attacker.NextAttackBonus = 0;
 
-            int damage = shielded ? 0 : BattleRules.ComputeDamage(atkCard, defCard, bonus);
+            int damage = BattleRules.ComputeDamage(atkCard, defCard, bonus);
             bool effective = BattleRules.IsSuperEffective(atkCard.Element, defCard.Element);
 
+            // The UI captures the pre-damage HP from this event, so it must fire before
+            // the defender's HP is mutated.
             OnAttack?.Invoke(atkCard, attacker.Side, defCard, damage, effective);
-            if (shielded)
-            {
-                SetStatus($"{shieldCard.DisplayName} dikorbankan untuk menangkal serangan {atkCard.DisplayName}!");
-            }
-            else
-            {
-                defCard.CurrentHp = Mathf.Max(0, defCard.CurrentHp - damage);
 
-                // Babi Ngepet's signature: steals one energy on hit.
-                if (atkCard.CardId == "BN" && damage > 0)
-                {
-                    defender.Energy = Mathf.Max(0, defender.Energy - 1);
-                    if (attacker.Energy < BattleRules.EnergyCap)
-                        attacker.Energy++;
-                    OnEnergyChanged?.Invoke(defender.Side);
-                    OnEnergyChanged?.Invoke(attacker.Side);
-                    SetStatus($"{atkCard.DisplayName} mencuri 1 energi!");
-                }
-            }
+            defCard.CurrentHp = Mathf.Max(0, defCard.CurrentHp - damage);
+            string effectNote = ApplyAttackEffects(attacker, defender, atkCard);
 
             if (defCard.IsKnockedOut)
             {
@@ -781,14 +758,137 @@ namespace TcgBattle.Gameplay
                     return;
                 }
                 PromoteAfterKnockout(defender);
+                if (Phase == Phase.GameOver)
+                    return;
             }
-            else if (!shielded)
+            else
             {
-                SetStatus(effective
+                string hit = effective
                     ? $"{atkCard.DisplayName} mendarat {damage} damage (2x)!"
-                    : $"{atkCard.DisplayName} mendarat {damage} damage.");
+                    : $"{atkCard.DisplayName} mendarat {damage} damage.";
+                SetStatus(string.IsNullOrEmpty(effectNote) ? hit : $"{hit} {effectNote}");
             }
+
+            // Siluman Babi's recoil is part of its attack. Resolve it after the
+            // defender's KO/promotion so the attack animation always has both slots.
+            if (atkCard.CardId == BattleRules.SilumanBabiId &&
+                ReferenceEquals(attacker.Active, atkCard))
+            {
+                int recoil = BattleRules.SilumanBabiRecoil;
+                atkCard.CurrentHp = Mathf.Max(0, atkCard.CurrentHp - recoil);
+                OnSelfDamaged?.Invoke(atkCard, attacker.Side, recoil);
+                if (atkCard.IsKnockedOut)
+                {
+                    defender.Points++;
+                    OnKnockedOut?.Invoke(atkCard, attacker.Side);
+                    OnScoreChanged?.Invoke(defender.Side, defender.Points);
+                    if (defender.Points >= BattleRules.PointsToWin)
+                    {
+                        EndGame(defender.Side);
+                        OnStateChanged?.Invoke();
+                        return;
+                    }
+                    PromoteAfterKnockout(attacker);
+                    if (Phase == Phase.GameOver)
+                        return;
+                }
+                else
+                {
+                    SetStatus($"{atkCard.DisplayName} menerima {recoil} damage dari serangannya sendiri.");
+                }
+            }
+
             OnStateChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Secondary effects printed on the attacking card. They resolve after the
+        /// primary damage. The returned note is appended to the normal hit message.
+        /// </summary>
+        private string ApplyAttackEffects(PlayerState attacker, PlayerState defender, CardInstance atkCard)
+        {
+            switch (atkCard.CardId)
+            {
+                case "PK":
+                    bool discarded;
+                    bool drew = DrawInternal(attacker, out discarded);
+                    if (drew)
+                        return "Pak Karta mengambil 1 kartu dari draw pile.";
+                    return discarded ? "Tangan penuh: kartu yang diambil dibuang." : "Draw pile kosong.";
+
+                case "PO":
+                    if (attacker.Energy >= BattleRules.EnergyCap)
+                        return "Energi sudah penuh.";
+                    attacker.Energy = Mathf.Min(BattleRules.EnergyCap,
+                        attacker.Energy + BattleRules.PasukanOborEnergyGain);
+                    OnEnergyChanged?.Invoke(attacker.Side);
+                    return "Pasukan Obor mendapatkan 1 energi.";
+
+                case "BN":
+                    return ResolveBabiNgepetSteal(attacker, defender);
+
+                case "AW":
+                    var benchNote = DamageBenchSupport(defender, BattleRules.MbokSumiId,
+                        BattleRules.AmukanWargaBenchDamage);
+                    return benchNote != null ? "Balas Dendam juga " + benchNote : null;
+
+                default:
+                    return null;
+            }
+        }
+
+        private string ResolveBabiNgepetSteal(PlayerState attacker, PlayerState defender)
+        {
+            LastBabiNgepetStealHeads = false;
+            LastBabiNgepetStealGuaranteed = false;
+
+            // Tumbal Anak: one copy is consumed so this attack's coin flip is
+            // guaranteed to steal energy. It is the owner's hand passive.
+            var tumbal = FindHandSupport(attacker, Data.SupportEffect.TumbalAnakHandPassive);
+            if (tumbal != null)
+            {
+                attacker.Hand.Remove(tumbal);
+                OnSupportUsed?.Invoke(tumbal, attacker.Side);
+                LastBabiNgepetStealGuaranteed = true;
+            }
+
+            bool heads = LastBabiNgepetStealGuaranteed || UnityEngine.Random.value < 0.5f;
+            LastBabiNgepetStealHeads = heads;
+            if (!heads)
+                return "Lempar koin: angka. Energi lawan tidak dicuri.";
+            if (defender.Energy <= 0)
+                return "Lempar koin: gambar, tetapi lawan tidak punya energi.";
+
+            defender.Energy = Mathf.Max(0, defender.Energy - BattleRules.BabiNgepetEnergySteal);
+            if (attacker.Energy < BattleRules.EnergyCap)
+                attacker.Energy++;
+            OnEnergyChanged?.Invoke(defender.Side);
+            OnEnergyChanged?.Invoke(attacker.Side);
+            return LastBabiNgepetStealGuaranteed
+                ? "Tumbal Anak: 1 energi lawan pasti dicuri!"
+                : "Lempar koin: gambar! 1 energi dicuri.";
+        }
+
+        /// <summary>
+        /// Damage a named support card in a bench. Mbok Sumi is the only support with
+        /// printed HP today. A support that reaches 0 leaves play and scores no point.
+        /// </summary>
+        private string DamageBenchSupport(PlayerState owner, string cardId, int damage)
+        {
+            var target = FindBenchSupport(owner, cardId);
+            if (target == null)
+                return null;
+
+            target.CurrentHp = Mathf.Max(0, target.CurrentHp - damage);
+            OnSupportDamaged?.Invoke(target, owner.Side, damage);
+            if (target.IsKnockedOut)
+            {
+                owner.Bench.Remove(target);
+                OnSupportDestroyed?.Invoke(target, owner.Side);
+                return $"{target.DisplayName} di bangku lawan pingsan!";
+            }
+            return $"{target.DisplayName} di bangku lawan menerima {damage} damage " +
+                   $"({target.CurrentHp}/{target.MaxHp} HP).";
         }
 
         private void PromoteAfterKnockout(PlayerState p)
@@ -869,17 +969,9 @@ namespace TcgBattle.Gameplay
         {
             if (card.Support.effect == Data.SupportEffect.KucingLiarSingleShot)
             {
-                for (int i = opponent.Bench.Count - 1; i >= 0; i--)
-                {
-                    var b = opponent.Bench[i];
-                    if (b.IsSupport && b.CardId == "MS")
-                    {
-                        opponent.Bench.RemoveAt(i);
-                        OnSupportDestroyed?.Invoke(b, opponent.Side);
-                        SetStatus($"Kucing Liar menyerang Mbok Sumi di bangku lawan! ({card.Support.effectValue} damage)");
-                        return;
-                    }
-                }
+                string note = DamageBenchSupport(opponent, BattleRules.MbokSumiId, card.Support.effectValue);
+                if (note != null)
+                    SetStatus($"Kucing Liar menyerang Mbok Sumi di bangku lawan! {note}");
             }
             else if (card.Support.effect == Data.SupportEffect.PunarmaJumatLegiSingleShot)
             {
@@ -890,10 +982,7 @@ namespace TcgBattle.Gameplay
 
         public static bool BenchContainsMbokSumi(PlayerState p)
         {
-            foreach (var c in p.Bench)
-                if (c.IsSupport && c.CardId == "MS")
-                    return true;
-            return false;
+            return FindBenchSupport(p, BattleRules.MbokSumiId) != null;
         }
 
         public static bool HandContainsSupport(PlayerState p, Data.SupportEffect effect)
@@ -909,10 +998,31 @@ namespace TcgBattle.Gameplay
             return null;
         }
 
-        private static bool HasFreeRetreat(PlayerState p)
+        private static CardInstance FindBenchSupport(PlayerState p, string cardId)
         {
-            // Mbok Sumi's passive: bila dia di bangku, mundur gratis (sekali per giliran).
-            return !p.UsedFreeRetreatViaMbokSumi && BenchContainsMbokSumi(p);
+            foreach (var c in p.Bench)
+                if (c.IsSupport && c.CardId == cardId && !c.IsKnockedOut)
+                    return c;
+            return null;
+        }
+
+        /// <summary>
+        /// Amukan Warga's printed passive: heal 20 HP at the start of its owner's turn.
+        /// It only applies while Amukan Warga is the active card.
+        /// </summary>
+        private void HealActiveAtTurnStart(PlayerState p)
+        {
+            var active = p.Active;
+            if (active == null || !active.IsBattle ||
+                active.CardId != BattleRules.WargaEvolution2Id)
+                return;
+            if (active.IsKnockedOut || active.CurrentHp >= active.MaxHp)
+                return;
+
+            int healed = Mathf.Min(BattleRules.AmukanWargaHealPerTurn,
+                active.MaxHp - active.CurrentHp);
+            active.CurrentHp += healed;
+            OnHealed?.Invoke(active, p.Side, healed);
         }
 
         // ------------------------------------------------------------------ helpers

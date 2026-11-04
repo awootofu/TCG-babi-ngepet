@@ -306,15 +306,16 @@ namespace TcgBattle.UI
 
             bool isBattle = card.IsBattle;
             bool isBoard = mode == CardDisplayMode.Active || mode == CardDisplayMode.Bench;
-            bool showStrip = isBoard && isBattle;
+            bool showHpStrip = isBoard && card.HasHp;
+            bool showElement = isBoard && isBattle;
             int stage = isBattle ? UiStyle.EvolutionStage(card.CardId) : 0;
 
             _art.sprite = ArtLibrary.GetCardArt(card.ArtResource);
             _art.gameObject.SetActive(true);
 
             _elementIcon.sprite = ArtLibrary.GetElement(card.Element);
-            _elementIcon.gameObject.SetActive(showStrip);
-            _elementChip.gameObject.SetActive(showStrip);
+            _elementIcon.gameObject.SetActive(showElement);
+            _elementChip.gameObject.SetActive(showElement);
             _elementRing.color = UiStyle.WithAlpha(UiStyle.ElementAccent(card.Element), 0.70f);
 
             _costChip.gameObject.SetActive(isBattle && mode != CardDisplayMode.Hidden);
@@ -328,7 +329,15 @@ namespace TcgBattle.UI
                 _supportChip.color = UiStyle.SupportChipColor(card);
                 _supportRing.color = UiStyle.SupportRingColor(card);
                 _supportText.color = UiStyle.SupportTextColor(card);
+                _supportChip.rectTransform.anchoredPosition =
+                    new Vector2(0f, showHpStrip ? 30f : 4f);
             }
+
+            // Supports with printed HP have no element orb, so let the HP bar use
+            // the full strip width instead of leaving an empty socket.
+            var hpBgRt = _hpBg.rectTransform;
+            hpBgRt.offsetMin = new Vector2(showElement ? 29f : 4f, -8f);
+            hpBgRt.offsetMax = new Vector2(-4f, 8f);
             _backing.color = card.IsSupport ? UiStyle.CardBackingSupport : UiStyle.CardBacking;
 
             // The printed card face owns its border/color. Keep the old frame image as the
@@ -343,10 +352,11 @@ namespace TcgBattle.UI
             // Decorative in-card accent is redundant with the printed batik border.
             _bottomAccent.gameObject.SetActive(false);
 
-            // Info strip: shown only for battle cards on the board.
+            // Info strip: battle cards on the board and bench supports with printed HP
+            // (Mbok Sumi). One-shot supports never sit on the board, so they never show it.
             var strip = _hpBg.transform.parent.gameObject;
-            strip.SetActive(showStrip);
-            if (showStrip)
+            strip.SetActive(showHpStrip);
+            if (showHpStrip)
             {
                 _hpText.fontSize = (mode == CardDisplayMode.Active
                     ? UiStyle.CardHpActive

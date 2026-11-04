@@ -100,8 +100,6 @@ namespace TcgBattle.UI
         private int _fxEpoch;
         private bool _combatBusy;
         private int _lastPlayerEnergy, _lastBotEnergy;
-        private bool _shieldPending;
-        private Side _shieldSide;
         private bool _restarting;
         private Coroutine _attackRoutine;
         private Coroutine _playerActiveSlotIn, _botActiveSlotIn;
@@ -226,7 +224,9 @@ namespace TcgBattle.UI
             m.OnScoreChanged += HandleScore;
             m.OnDrawn += HandleDraw;
             m.OnSupportDestroyed += HandleSupportDestroyed;
-            m.OnSupportUsed += HandleSupportUsed;
+            m.OnSupportDamaged += HandleSupportDamaged;
+            m.OnSelfDamaged += HandleSelfDamaged;
+            m.OnHealed += HandleHealed;
             m.OnGameOver += ShowGameOver;
         }
 
@@ -246,7 +246,9 @@ namespace TcgBattle.UI
             m.OnScoreChanged -= HandleScore;
             m.OnDrawn -= HandleDraw;
             m.OnSupportDestroyed -= HandleSupportDestroyed;
-            m.OnSupportUsed -= HandleSupportUsed;
+            m.OnSupportDamaged -= HandleSupportDamaged;
+            m.OnSelfDamaged -= HandleSelfDamaged;
+            m.OnHealed -= HandleHealed;
             m.OnGameOver -= ShowGameOver;
         }
 
@@ -825,7 +827,7 @@ namespace TcgBattle.UI
             botRt.anchoredPosition = new Vector2(160f, 0f);
             botDeckStack = botRt;
             botDeckPile = botGo.AddComponent<DeckPileView>();
-            botDeckPile.Build();
+            botDeckPile.Build(mirrored: true); // opponent's pile faces the opponent
 
             var playerGo = new GameObject("PlayerDeckStack", typeof(RectTransform));
             var playerRt = (RectTransform)playerGo.transform;
@@ -836,7 +838,7 @@ namespace TcgBattle.UI
             playerRt.anchoredPosition = new Vector2(160f, 0f);
             playerDeckStack = playerRt;
             playerDeckPile = playerGo.AddComponent<DeckPileView>();
-            playerDeckPile.Build(mirrored: true);
+            playerDeckPile.Build(); // player's pile is upright to the player
         }
 
         /// <summary>
@@ -852,7 +854,9 @@ namespace TcgBattle.UI
             fanRt.anchorMin = fanRt.anchorMax = new Vector2(1f, 0.9259f);
             fanRt.pivot = new Vector2(0.5f, 0.5f);
             fanRt.sizeDelta = new Vector2(440f, 200f);
-            fanRt.anchoredPosition = new Vector2(-240f, 0f);
+            // Drop the fan slightly so the official back's top border is never
+            // clipped by the screen edge; the score pips stay below it.
+            fanRt.anchoredPosition = new Vector2(-240f, -22f);
 
             botHandFan = fanGo.AddComponent<BotHandFan>();
             botHandFan.Initialize(fanRt, botDeckStack, card =>
@@ -1277,12 +1281,35 @@ namespace TcgBattle.UI
                 transformErrorText.text = "";
 
             transformOverlay.SetActive(true);
+            RefreshTransformChoiceAvailability();
             if (transformActionRoot != null)
                 transformActionRoot.gameObject.SetActive(false);
             transformGroup.alpha = 0f;
             transformGroup.interactable = true;
             transformGroup.blocksRaycasts = true;
             transformFade = StartCoroutine(FadeTransformOverlay(0f, 1f, 0.14f, false));
+        }
+
+        private void RefreshTransformChoiceAvailability()
+        {
+            if (battle == null || transformChoiceViews == null)
+                return;
+            foreach (var view in transformChoiceViews)
+            {
+                if (view == null || view.Card == null)
+                    continue;
+                bool available = false;
+                foreach (var card in battle.Player.Hand)
+                {
+                    if (card.IsBattle && card.CardId == view.Card.CardId)
+                    {
+                        available = true;
+                        break;
+                    }
+                }
+                view.SetDimmed(!available, 0.55f);
+                view.SetEligible(available);
+            }
         }
 
         private void CloseTransformOverlay()
@@ -1471,8 +1498,6 @@ namespace TcgBattle.UI
             {
                 if (battle.Player.Active == null)
                     mundurLabel.text = "MUNDUR";
-                else if (BattleManager.BenchContainsMbokSumi(battle.Player) && !battle.Player.UsedFreeRetreatViaMbokSumi)
-                    mundurLabel.text = "MUNDUR \u00b7GRATIS";
                 else
                     mundurLabel.text = $"MUNDUR \u00b7{battle.Player.Active.RetreatCost}";
             }
@@ -1695,7 +1720,7 @@ namespace TcgBattle.UI
                 {
                     if (card.IsSupport && card.CardId == "TA")
                     {
-                        ShakeView(view, "Tumbal Anak di tangan akan dikorbankan untuk menangkal serangan api pada Babi Ngepet.");
+                        ShakeView(view, "Tumbal Anak di tangan akan dikorbankan agar serangan Babi Ngepet berikutnya pasti mencuri energi.");
                         return;
                     }
                     if (!battle.PlayCardFromHand(card))
@@ -1737,10 +1762,6 @@ namespace TcgBattle.UI
             if (_combatBusy)
                 return;
 
-            Side defenderSide = side == Side.Player ? Side.Bot : Side.Player;
-            bool blocked = dmg <= 0 && _shieldPending && _shieldSide == defenderSide;
-            _shieldPending = false;
-
             // The attack is cosmetic only: gameplay already resolved (or is about to
             // resolve) in BattleManager. Lock clicks for this short presentation so a
             // card click cannot open inspection mid-lunge.
@@ -1757,17 +1778,17 @@ namespace TcgBattle.UI
             _inspectSourceView = null;
             SetHandInput(false);
 
-            _attackRoutine = StartCoroutine(AttackAnim(atk, side, def, dmg, effective, blocked, epoch));
+            _attackRoutine = StartCoroutine(AttackAnim(atk, side, def, dmg, effective, epoch));
         }
 
         private IEnumerator AttackAnim(CardInstance atk, Side side, CardInstance def, int dmg,
-            bool effective, bool blocked, int epoch)
+            bool effective, int epoch)
         {
             var atkView = FindBoardView(atk);
             var defView = FindBoardView(def);
             float dir = side == Side.Player ? 1f : -1f;
             var impactColor = ElementColor(atk.Element);
-            var hitColor = blocked ? ColGoldBright : impactColor;
+            var hitColor = impactColor;
 
             // Everything before the first yield runs before the manager applies damage:
             // capture the post-damage HP now so the bar can hold pre-damage, then drain
@@ -1795,7 +1816,7 @@ namespace TcgBattle.UI
             if (defenderStillBound)
             {
                 StartCoroutine(CardHitReaction(defView.Root, atk.Element, 0.26f, epoch));
-                StartCoroutine(ImpactFlash(defView, hitColor, effective && !blocked, epoch));
+                StartCoroutine(ImpactFlash(defView, hitColor, effective, epoch));
             }
 
             var anchor = defenderStillBound
@@ -1805,21 +1826,11 @@ namespace TcgBattle.UI
                     : (atkView != null ? atkView.Root : null));
             if (anchor != null)
             {
-                if (blocked)
-                {
-                    SpawnFloatingLabel(anchor, "DITAHAN!", ColGoldBright,
-                        new Vector2(0f, 96f), new Vector2(300f, 76f), 40f, 0.9f);
-                    SpawnFloatingLabel(anchor, "TUMBAL ANAK", ColGold,
-                        new Vector2(0f, 24f), new Vector2(240f, 48f), 26f, 0.9f, true);
-                }
-                else
-                {
-                    string label = dmg > 0 ? $"-{dmg} HP" : "0 HP";
-                    var color = dmg <= 0 ? ColLavIdle : impactColor;
-                    SpawnDamagePopup(anchor, label, color);
-                    if (effective && dmg > 0)
-                        SpawnDamagePopup(anchor, "2x!", ColRed, extra: true);
-                }
+                string label = dmg > 0 ? $"-{dmg} HP" : "0 HP";
+                var color = dmg <= 0 ? ColLavIdle : impactColor;
+                SpawnDamagePopup(anchor, label, color);
+                if (effective && dmg > 0)
+                    SpawnDamagePopup(anchor, "2x!", ColRed, extra: true);
             }
 
             // Belt-and-suspenders for non-lethal hits: once the cosmetic motion has
@@ -2289,20 +2300,36 @@ namespace TcgBattle.UI
             _pendingPlayerDrawSet.Clear();
         }
 
-        /// <summary>
-        /// Tumbal Anak is consumed by BattleManager before the attack event. Remember
-        /// which side was protected so the zero-damage hit can show a clear block
-        /// response instead of a misleading "-0 HP" number.
-        /// </summary>
-        private void HandleSupportUsed(CardInstance card, Side side)
+        /// <summary>Damage to a bench support (Kucing Liar or Amukan Warga's splash).</summary>
+        private void HandleSupportDamaged(CardInstance card, Side side, int damage)
         {
-            if (card == null || card.Support == null)
+            var view = FindBoardView(card);
+            if (view == null)
                 return;
-            if (card.Support.effect == TcgBattle.Data.SupportEffect.TumbalAnakHandPassive)
-            {
-                _shieldPending = true;
-                _shieldSide = side;
-            }
+            SpawnRing(view.Root, UiStyle.WithAlpha(UiStyle.Fire, 0.80f), 28f, 0.28f);
+            SpawnDamagePopup(view.Root, $"-{damage} HP", UiStyle.Ember);
+        }
+
+        /// <summary>Siluman Babi's printed recoil: damage to the attacker itself.</summary>
+        private void HandleSelfDamaged(CardInstance card, Side side, int damage)
+        {
+            var view = FindBoardView(card);
+            if (view == null)
+                return;
+            SpawnRing(view.Root, UiStyle.WithAlpha(UiStyle.Danger, 0.85f), 30f, 0.28f);
+            SpawnDamagePopup(view.Root, $"-{damage} HP", UiStyle.Danger);
+            StartCoroutine(UiFx.Shake(view.Root, 6f, 0.22f));
+        }
+
+        /// <summary>Amukan Warga's printed heal at the start of its owner's turn.</summary>
+        private void HandleHealed(CardInstance card, Side side, int amount)
+        {
+            var view = FindBoardView(card);
+            if (view == null)
+                return;
+            SpawnRing(view.Root, UiStyle.WithAlpha(UiStyle.HpFull, 0.85f), 24f, 0.30f);
+            SpawnFloatingLabel(view.Root, $"+{amount} HP", UiStyle.HpFull,
+                new Vector2(0f, 96f), new Vector2(200f, 54f), 28f, 0.9f);
         }
 
         /// <summary>Kucing Liar sniping a bench Mbok Sumi: one-shot destruction feedback.</summary>
@@ -2795,7 +2822,6 @@ namespace TcgBattle.UI
             _attackRoutine = null;
             _playerActiveSlotIn = null;
             _botActiveSlotIn = null;
-            _shieldPending = false;
 
             if (combatFxLayer != null)
             {

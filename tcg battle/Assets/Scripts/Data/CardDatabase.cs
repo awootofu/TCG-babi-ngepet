@@ -30,6 +30,7 @@ namespace TcgBattle.Data
         public string id;
         public string displayName;
         public string artResource;
+        public int maxHp;                   // 0 for support cards that never sit on the board
         public SupportEffect effect;
         public int effectValue;             // damage / bonus amount for single-shot cards
         public string description;          // concise Indonesian effect text for the preview
@@ -57,24 +58,26 @@ namespace TcgBattle.Data
             new BattleCardDef
             {
                 id = "BN", displayName = "Babi Ngepet", element = Element.Dark,
-                artResource = "Cards/Babi Ngepet", maxHp = 100, attack = 40,
-                attackName = "Mencuri Kekayaan", attackEffectText = "Mengambil 1 poin energi lawan.",
+                artResource = "Cards/Babi Ngepet", maxHp = 200, attack = 80,
+                attackName = "Mencuri Kekayaan",
+                attackEffectText = "Lempar koin. Jika hasilnya gambar, curi 1 Energi dari lawan.",
                 attackEnergyCost = 1, retreatEnergyCost = 1,
             },
             new BattleCardDef
             {
                 id = "PK", displayName = "Pak Karta", element = Element.Dark,
                 artResource = "Cards/Pak Karta", maxHp = 150, attack = 20,
-                attackName = "Pikiran Jahat", attackEffectText = "",
+                attackName = "Ingin Kaya", attackEffectText = "Ambil 1 kartu dari draw pile.",
                 passiveText = "",
                 attackEnergyCost = 1, retreatEnergyCost = 1,
             },
             new BattleCardDef
             {
                 id = "SB", displayName = "Siluman Babi", element = Element.Dark,
-                artResource = "Cards/Siluman Babi", maxHp = 200, attack = 100,
-                attackName = "Hilang Kemanusiaan", attackEffectText = "",
-                attackEnergyCost = 2, retreatEnergyCost = 2,
+                artResource = "Cards/Siluman Babi", maxHp = 300, attack = 120,
+                attackName = "Hilang Kemanusiaan",
+                attackEffectText = "Serangan ini juga memberikan 30 damage kepada diri sendiri.",
+                attackEnergyCost = 1, retreatEnergyCost = 2,
             },
             new BattleCardDef
             {
@@ -87,15 +90,17 @@ namespace TcgBattle.Data
             {
                 id = "PO", displayName = "Pasukan Obor", element = Element.Fire,
                 artResource = "Cards/Warga Evo 2", maxHp = 200, attack = 45,
-                attackName = "Obor Api", attackEffectText = "",
+                attackName = "Obor Api", attackEffectText = "Dapatkan 1 energi.",
                 attackEnergyCost = 1, retreatEnergyCost = 1,
             },
             new BattleCardDef
             {
                 id = "AW", displayName = "Amukan Warga", element = Element.Fire,
                 artResource = "Cards/Warga Evo 3", maxHp = 220, attack = 75,
-                attackName = "Balas Dendam", attackEffectText = "",
-                attackEnergyCost = 2, retreatEnergyCost = 2,
+                attackName = "Balas Dendam",
+                attackEffectText = "Serangan ini juga memberikan 20 damage kepada Mbok Sumi di Cadangan lawan.",
+                passiveText = "Amarah: Menyembuhkan darah sebanyak 20 HP setiap giliran.",
+                attackEnergyCost = 1, retreatEnergyCost = 2,
             },
         };
 
@@ -105,26 +110,30 @@ namespace TcgBattle.Data
             new SupportCardDef
             {
                 id = "MS", displayName = "Mbok Sumi", artResource = "Cards/Mbok Sumi",
+                maxHp = 50,
                 effect = SupportEffect.MbokSumiBenchPassive, effectValue = 0,
-                description = "Selama di bangku: mundur gratis sekali per giliran.",
+                description = "Selama Mbok Sumi ada di Cadangan, Pak Karta dapat berevolusi menjadi Babi Ngepet.",
             },
             new SupportCardDef
             {
                 id = "TA", displayName = "Tumbal Anak", artResource = "Cards/Anak",
+                maxHp = 0,
                 effect = SupportEffect.TumbalAnakHandPassive, effectValue = 0,
-                description = "Saat di tangan: menangkal satu serangan Api ke Babi Ngepet. Satu kartu Tumbal Anak dikorbankan.",
+                description = "Serangan Babi Ngepet selanjutnya pasti mencuri energi. Satu kartu Tumbal Anak dikorbankan.",
             },
             new SupportCardDef
             {
                 id = "KL", displayName = "Kucing Liar", artResource = "Cards/Kucing",
+                maxHp = 0,
                 effect = SupportEffect.KucingLiarSingleShot, effectValue = 40,
-                description = "Saat dimainkan: 40 damage ke Mbok Sumi di bangku lawan hingga keluar dari permainan. Hanya jika lawan punya Mbok Sumi di bangku.",
+                description = "Menyerang Mbok Sumi yang berada dalam Cadangan lawan sebesar 40 damage.",
             },
             new SupportCardDef
             {
                 id = "PJ", displayName = "Punarma Jumat Legi", artResource = "Cards/Punarma",
+                maxHp = 0,
                 effect = SupportEffect.PunarmaJumatLegiSingleShot, effectValue = 50,
-                description = "Saat dimainkan: serangan berikutnya +50 damage hingga akhir giliran. Hanya jika Babi Ngepet aktif di sisi lawan.",
+                description = "Menaikkan serangan Warga berikutnya sebanyak 50 damage. Kartu ini hanya dapat digunakan ketika Babi Ngepet berada di dalam slot aktif lawan.",
             },
         };
 
@@ -171,6 +180,7 @@ namespace TcgBattle.Data
 
         [TextArea(3, 8)] public string rulesText =
             "Fire deals 2x damage to Dark cards. Dark deals 1x damage to Fire.\n" +
+            "Babi line: Pak Karta > Babi Ngepet > Siluman Babi. Pak Karta needs Mbok Sumi on the bench for the first step.\n" +
             "Each turn: draw one card and gain one energy.\n" +
             "Maximum 10 energy; extra energy is lost. Maximum 10 cards in hand; extra draws are discarded.\n" +
             "Attacks and retreats cost energy. Knock out a card to score.\n" +

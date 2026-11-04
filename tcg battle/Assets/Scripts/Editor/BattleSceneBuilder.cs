@@ -80,7 +80,17 @@ namespace TcgBattle.EditorTools
         [MenuItem("TCG Battle/Refresh Card Database Asset")]
         public static void RefreshDatabase()
         {
-            EnsureDatabase();
+            var db = EnsureDatabase();
+            var defaults = ScriptableObject.CreateInstance<CardDatabase>();
+            db.battleCards = defaults.battleCards;
+            db.supportCards = defaults.supportCards;
+            db.playerDeck = defaults.playerDeck;
+            db.botDeck = defaults.botDeck;
+            db.rulesText = defaults.rulesText;
+            EditorUtility.SetDirty(db);
+            AssetDatabase.SaveAssets();
+            Object.DestroyImmediate(defaults);
+            Debug.Log("[BattleSceneBuilder] Refreshed CardDatabase.asset from the code defaults.");
         }
 
         private static void EnsureTmpEssentials()

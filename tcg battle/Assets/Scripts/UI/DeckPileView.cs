@@ -26,7 +26,7 @@ namespace TcgBattle.UI
             _stack.pivot = new Vector2(0.5f, 0.5f);
             _stack.sizeDelta = new Vector2(140f, 190f);
             _stack.anchoredPosition = Vector2.zero;
-            // The player's pile faces the opposite way; the count chip stays upright.
+            // The opponent's pile faces the opponent; the count chip stays upright.
             if (mirrored)
                 _stack.localRotation = Quaternion.Euler(0f, 0f, 180f);
 

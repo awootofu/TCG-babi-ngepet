@@ -17,10 +17,11 @@ MonoBehaviour:
     displayName: Babi Ngepet
     element: 0
     artResource: Cards/Babi Ngepet
-    maxHp: 100
-    attack: 40
+    maxHp: 200
+    attack: 80
     attackName: Mencuri Kekayaan
-    attackEffectText: Mengambil 1 poin energi lawan.
+    attackEffectText: Lempar koin. Jika hasilnya gambar, curi 1 Energi dari lawan.
+    passiveText: 
     attackEnergyCost: 1
     retreatEnergyCost: 1
   - id: PK
@@ -29,19 +30,21 @@ MonoBehaviour:
     artResource: Cards/Pak Karta
     maxHp: 150
     attack: 20
-    attackName: Pikiran Jahat
-    attackEffectText: 
+    attackName: Ingin Kaya
+    attackEffectText: Ambil 1 kartu dari draw pile.
+    passiveText: 
     attackEnergyCost: 1
     retreatEnergyCost: 1
   - id: SB
     displayName: Siluman Babi
     element: 0
     artResource: Cards/Siluman Babi
-    maxHp: 200
-    attack: 100
+    maxHp: 300
+    attack: 120
     attackName: Hilang Kemanusiaan
-    attackEffectText: 
-    attackEnergyCost: 2
+    attackEffectText: Serangan ini juga memberikan 30 damage kepada diri sendiri.
+    passiveText: 
+    attackEnergyCost: 1
     retreatEnergyCost: 2
   - id: WD
     displayName: Warga Desa
@@ -51,6 +54,7 @@ MonoBehaviour:
     attack: 30
     attackName: Serang Balik
     attackEffectText: 
+    passiveText: 
     attackEnergyCost: 1
     retreatEnergyCost: 1
   - id: PO
@@ -60,7 +64,8 @@ MonoBehaviour:
     maxHp: 200
     attack: 45
     attackName: Obor Api
-    attackEffectText: 
+    attackEffectText: Dapatkan 1 energi.
+    passiveText: 
     attackEnergyCost: 1
     retreatEnergyCost: 1
   - id: AW
@@ -70,30 +75,44 @@ MonoBehaviour:
     maxHp: 220
     attack: 75
     attackName: Balas Dendam
-    attackEffectText: 
-    attackEnergyCost: 2
+    attackEffectText: Serangan ini juga memberikan 20 damage kepada Mbok Sumi di
+      Cadangan lawan.
+    passiveText: 'Amarah: Menyembuhkan darah sebanyak 20 HP setiap giliran.'
+    attackEnergyCost: 1
     retreatEnergyCost: 2
   supportCards:
   - id: MS
     displayName: Mbok Sumi
     artResource: Cards/Mbok Sumi
+    maxHp: 50
     effect: 0
     effectValue: 0
+    description: Selama Mbok Sumi ada di Cadangan, Pak Karta dapat berevolusi menjadi
+      Babi Ngepet.
   - id: TA
     displayName: Tumbal Anak
     artResource: Cards/Anak
+    maxHp: 0
     effect: 1
     effectValue: 0
+    description: Serangan Babi Ngepet selanjutnya pasti mencuri energi. Satu kartu
+      Tumbal Anak dikorbankan.
   - id: KL
     displayName: Kucing Liar
     artResource: Cards/Kucing
+    maxHp: 0
     effect: 2
     effectValue: 40
+    description: Menyerang Mbok Sumi yang berada dalam Cadangan lawan sebesar 40
+      damage.
   - id: PJ
     displayName: Punarma Jumat Legi
     artResource: Cards/Punarma
+    maxHp: 0
     effect: 3
     effectValue: 50
+    description: Menaikkan serangan Warga berikutnya sebanyak 50 damage. Kartu ini
+      hanya dapat digunakan ketika Babi Ngepet berada di dalam slot aktif lawan.
   playerDeck:
   - cardId: PK
     copies: 4
@@ -118,10 +137,16 @@ MonoBehaviour:
     copies: 2
   rulesText: 'Fire deals 2x damage to Dark cards. Dark deals 1x damage to Fire.
 
-    Each
-    turn: draw one card and gain one energy.
+    Babi
+    line: Pak Karta > Babi Ngepet > Siluman Babi. Pak Karta needs Mbok Sumi on the
+    bench for the first step.
 
-    Attacks and retreats cost energy.
-    Knock out a card to score.
+    Each turn: draw one card and gain one energy.
+
+    Maximum
+    10 energy; extra energy is lost. Maximum 10 cards in hand; extra draws are discarded.
+
+    Attacks
+    and retreats cost energy. Knock out a card to score.
 
     First to 3 points wins.'

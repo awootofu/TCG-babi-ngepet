@@ -31,6 +31,12 @@ namespace TcgBattle.UI
             return Load("Arts/Testos");
         }
 
+        /// <summary>Official KISATARA card back used by every face-down card and deck pile.</summary>
+        public static Sprite GetCardBack()
+        {
+            return Load("Cards/Back Side");
+        }
+
         private static Sprite Load(string resourcePath)
         {
             if (string.IsNullOrEmpty(resourcePath))

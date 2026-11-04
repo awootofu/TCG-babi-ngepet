@@ -14,6 +14,14 @@ namespace TcgBattle.Gameplay
         public const int EnergyCap = 10;
         public const int PointsToWin = 3;
 
+        // Printed card effects (KISATARA balance update).
+        public const int BabiNgepetEnergySteal = 1;
+        public const int PasukanOborEnergyGain = 1;
+        public const int PakKartaDraw = 1;
+        public const int SilumanBabiRecoil = 30;
+        public const int AmukanWargaHealPerTurn = 20;
+        public const int AmukanWargaBenchDamage = 20;
+
         // Warga Desa > Pasukan Obor > Amukan Warga. The two evolved battle cards
         // may only enter the active slot through this line, never as a normal play.
         public const string WargaBasicId = "WD";
@@ -21,7 +29,8 @@ namespace TcgBattle.Gameplay
         public const string WargaEvolution2Id = "AW";
 
         // Pak Karta's evolution line: Pak Karta > Babi Ngepet > Siluman Babi.
-        // Every step consumes the matching evolution card from hand.
+        // Pak Karta's first step requires Mbok Sumi on the bench; the BN > SB
+        // step is a normal evolution. Each step consumes the matching card from hand.
         public const string PakKartaId = "PK";
         public const string MbokSumiId = "MS";
         public const string BabiNgepetId = "BN";

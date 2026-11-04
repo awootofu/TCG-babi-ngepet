@@ -1,7 +1,10 @@
 # TCG Battle – "Legenda Babi Ngepet" Prototype
 
 A playable Unity 2D trading-card-game battle prototype: **Babi Ngepet (Dark)** vs **Warga Desa (Fire)**,
-played on a portrait phone-style layout with the artist's original card artwork.
+played on a 1920×1080 landscape board with the artist's original card artwork.
+
+The current balance pass uses the supplied KISATARA card faces and the official purple/gold
+`Back Side` card back for **both** deck piles, the bot's hidden hand, and every draw ghost.
 
 ## How to play
 
@@ -20,7 +23,7 @@ played on a portrait phone-style layout with the artist's original card artwork.
 | Click a hand card during setup | send that battle card to your **active slot** |
 | Click a hand card on your turn | play it (battle card → bench, Kucing Liar/Punarma → instant effect) |
 | **SERANG** | attack with your active card (costs its attack energy) |
-| **MUNDUR ·N** | retreat: your active goes to the bench, first bench battle card steps up (costs N energy; **GRATIS** while Mbok Sumi is on your bench) |
+| **MUNDUR ·N** | retreat: your active goes to the bench, first bench battle card steps up (costs N energy) |
 | Click a specific own bench card | targeted retreat to that card |
 | **AKHIRI GILIRAN** | end your turn |
 
@@ -29,6 +32,8 @@ played on a portrait phone-style layout with the artist's original card artwork.
 - 20-card decks per side; opening hand of 5 (with a "mulligan" if a hand has no battle card).
 - Coin flip decides who starts (shown before the first turn).
 - Each turn: draw 1 card + gain 1 energy.
+- Maximum 10 energy; energy gained beyond 10 is lost.
+- Maximum 10 cards in hand; draws beyond 10 are discarded.
 - Attacks cost the card's attack energy; retreats cost its retreat energy.
 - **Fire deals 2× damage to Dark; Dark deals 1× to Fire.**
 - 1 active slot + 3 bench slots per player.
@@ -36,14 +41,32 @@ played on a portrait phone-style layout with the artist's original card artwork.
 - A KO'd active card is replaced automatically; if no card is available to fill the slot, that player **loses**.
 - Invalid actions are refused with an explanatory message.
 
-### Support-card effects (as printed on the cards)
+### Card stats (KISATARA printed values)
+
+| Card | Element | HP | Attack | Cost | Effect |
+|---|---|---:|---|---:|---|
+| **Warga Desa** | Fire | 150 | Serang Balik · 30 | 1 | — |
+| **Pasukan Obor** | Fire | 200 | Obor Api · 45 | 1 | Gain 1 energy after attacking |
+| **Amukan Warga** | Fire | 220 | Balas Dendam · 75 | 1 | Passive: heal 20 HP at the start of its owner's turn. Attack also deals 20 to the opponent's bench Mbok Sumi |
+| **Pak Karta** | Dark | 150 | Ingin Kaya · 20 | 1 | Draw 1 card after attacking |
+| **Babi Ngepet** | Dark | 200 | Mencuri Kekayaan · 80 | 1 | Flip a coin; on heads steal 1 energy from the opponent |
+| **Siluman Babi** | Dark | 300 | Hilang Kemanusiaan · 120 | 1 | Attack also deals 30 damage to itself |
+
+### Support-card effects (as implemented)
 
 | Card | Effect as implemented |
 |---|---|
-| **Mbok Sumi** (PASIF) | While she is on your bench, your retreat is free |
-| **Tumbal Anak** (PASIF) | While in your **hand**, the opposing Fire attack on **Babi Ngepet** is nullified (0 damage) and **one copy is consumed**. Clicking it shows a hint; it is never played to the bench |
-| **Kucing Liar** | When played: 40 damage to the opponent's bench **Mbok Sumi** (she leaves play, no score). Only playable while an enemy Mbok Sumi is benched |
-| **Punarma Jumat Legi** | When played: your **next attack this turn gains +50**. Only playable while **Babi Ngepet** is the opponents active card |
+| **Mbok Sumi** | 50 HP while on the bench. While she is on your bench, **Pak Karta can evolve into Babi Ngepet**. She can be damaged by Kucing Liar and Amukan Warga's splash |
+| **Tumbal Anak** | While in your **hand**, Babi Ngepet's **next attack is guaranteed to steal 1 energy**; one copy is consumed. It is never played to the bench |
+| **Kucing Liar** | When played: 40 damage to the opponent's bench **Mbok Sumi** (she has 50 HP, so one hit leaves her at 10; a second hit KOs her). Only playable while an enemy Mbok Sumi is benched |
+| **Punarma Jumat Legi** | When played: the next Warga attack gains **+50 damage**. It persists until that attack happens. Only playable while **Babi Ngepet** is the opponent's active card |
+
+### Evolution lines
+
+- **Warga:** Warga Desa → Pasukan Obor → Amukan Warga. Damage already taken carries over.
+- **Babi:** Pak Karta → Babi Ngepet → Siluman Babi. Damage carries over and each step consumes the
+  matching card from hand. **Pak Karta's first step requires Mbok Sumi on the bench**; the
+  Babi Ngepet → Siluman Babi step is a normal evolution.
 
 ## Editing card stats / decks
 
@@ -57,12 +80,14 @@ All numbers live in **two places that stay in sync**:
 
 ## Replacing artwork
 
-- Card art: drop 630×880 (or any aspect) PNGs named exactly like the current files into
+- Card art: drop 1260×1760 PNGs named exactly like the current files into
   `Assets/Resources/Cards/` (e.g. `Babi Ngepet.png`). They are loaded via `Resources.Load` at runtime.
+- Official card back: `Assets/Resources/Cards/Back Side.png`. `CardBackVisual` is the single shared
+  factory used by both `DeckPileView` and `BotHandFan`, so the player deck, bot deck, bot hand and
+  draw ghosts always show the exact same supplied design.
 - Element icons: `Assets/Resources/Elements/Dark Element.png`, `Fire Element.png`.
-- The original artist SVGs in the *other* project (`C:\TCG Battle\Assets\Arts\*.svg`) are untouched.
-- The PNGs were rendered from those SVGs at 2× with a headless browser; the conversion script can be
-  recreated by asking for `convert-svg.ps1` (see report).
+- The supplied SVGs are in `C:\TCG Battle\Assets\cards and back\`; the project PNGs were rendered
+  from them at 2× with headless Chrome. The original SVGs are untouched.
 
 ## Project layout
 
@@ -78,12 +103,18 @@ Assets/
       BattleManager.cs      – all state transitions; pure logic, event-driven
       BotController.cs      – coroutine bot that only uses BattleManager hooks (never cheats)
     UI/
-      BattleUI.cs           – builds the whole portrait canvas in code; animations & event wiring
+      BattleUI.cs           – builds the whole landscape canvas in code; animations & event wiring
       CardView.cs           – reusable card visual (art + live HP bar/element/cost/selection)
+      CardBackVisual.cs     – shared official KISATARA card back
+      DeckPileView.cs       – mirrored deck piles with live counts
+      BotHandFan.cs         – opaque face-down opponent hand fan
       HandController.cs     – fanned hand layout + hand card clicks
       UiSpriteFactory.cs    – procedural rounded-rect/circle/shadow sprites
       UiFx.cs, ArtLibrary.cs, TmpFontService.cs – small helpers
-  Resources/Cards/*.png     – card faces rendered from the artist SVGs
+    Editor/
+      BattleSceneBuilder.cs – creates the scene and refreshes CardDatabase.asset
+      BalanceTestRunner.cs  – 182 targeted EditMode checks (TCG Battle menu)
+  Resources/Cards/*.png     – card faces rendered from the artist SVGs + Back Side.png
   Resources/Elements/*.png  – element icons
   Scenes/BattleScene.unity  – built by the menu item
 ```
@@ -95,31 +126,43 @@ TMP package 3.0.7 is in the manifest. If TMP Essential Resources were never impo
 Unity's built-in `LegacyRuntime.ttf`, so text always renders. Recommended:
 **Window → TextMeshPro → Import TMP Essential Resources**.
 
-## Automated playtest (validation run)
+## Automated validation (KISATARA balance update)
 
-A headless driver (agent tooling, not part of the game build) installs a periodic
-`EditorApplication` callback that plays a full match through the public `BattleManager`
-API while a tick-logger records every game event. Two full matches were run to
-**GameOver**:
+Run **TCG Battle → Run Balance Tests** in the Unity editor. The runner writes a plain-text report to
+`C:\TCG Battle\.stage1-tests\balance_results.txt`.
 
-| Run | Coin | Result | Notable event-trace evidence |
-|---|---|---|---|
-| 1 | Player first | **KAMU MENANG 3–0** | 15 attacks, Tumbal Anak nullified a Fire attack on Babi Ngepet (the current rule also consumes one copy), bench + Mbok Sumi free-retreat used |
-| 2 | Bot first | **BOT MENANG 3–1** | Bot benched Warga Desa/Pasukan Obor/Mbok Sumi, Warga Desa dealt 60 (2× super-effective) KOs, damage chain 150→90→30→KO, auto-promotion after each KO, correct `Butuh 1 energi untuk mundur.` denial, score pips hit 3 |
+Latest run: **182 checks passed, 0 failed**. Coverage:
 
-- Editor console: **0 errors** during both runs.
-- Screenshots captured during play: setup (coin-flip mid-animation), first turn,
-  one per attack, game over (`%LOCALAPPDATA%\Temp\opencode\unity-shots\d3-*.png`).
-- The bot coroutine uses `WaitForSecondsRealtime` for pacing so its turns play at the
-  same real-time rate even when the editor window is unfocused (scaled delta-time can
-  crawl in that state; gameplay logic itself is not time-based).
+- Every updated HP, attack, cost, attack name and effect text in `CardDatabase.asset`.
+- Both 20-card deck lists and the required-card validation.
+- Every card face PNG and the official `Back Side.png` (1260×1760) load from Resources.
+- Mbok Sumi's 50 HP support model and KO behavior.
+- Warga `WD → PO → AW` evolution and damage carry-over.
+- Babi `PK → BN → SB` evolution; Mbok Sumi required for `PK → BN`, normal `BN → SB`.
+- Damage multipliers, energy payment, once-per-turn attack restriction.
+- Babi Ngepet coin flip + Tumbal Anak guarantee.
+- Pasukan Obor energy gain and cap.
+- Pak Karta draw, including empty/full-hand behavior.
+- Siluman Babi recoil and self-KO scoring.
+- Amukan Warga heal and Mbok Sumi splash.
+- Kucing Liar 40 damage (leaves Mbok Sumi at 10; second hit KOs).
+- Punarma +50 condition and persistence until the next Warga attack.
+- Shared card-back factory: both decks, bot hand and draw ghosts use `ArtLibrary.GetCardBack()`.
 
-## Known limitations
+## Known limitations / interpretations
 
 - End-of-damage animations are cosmetic and may overlap the next action; game state is always correct.
 - The decorative turn banner can briefly overlap the game-over overlay in the same frame (cosmetic).
 - Opening hand is auto-mulliganned only until at least one battle card appears.
-- Punarma buff expires at the end of the turn if unused (interpretation).
-- Knocking out a support card (only possible via Kucing Liar) scores no point (interpretation).
+- **Punarma persists until the next Warga attack** because the printed text has no end-of-turn clause.
+- **Mbok Sumi gates only `PK → BN`.** The `BN → SB` step is a normal evolution because the active card is
+  no longer Pak Karta. If Mbok Sumi should gate both steps, move the bench check to both forms.
+- **Amukan Warga heals at the start of its owner's turn** (interpretation of "setiap giliran").
+- **Amukan Warga's 20 splash and Kucing Liar target the first Mbok Sumi** if more than one is benched.
+- **Siluman Babi's 30 recoil resolves after the defender's KO/promotion.** A self-KO awards the opponent
+  1 point; if the attack already ended the match, the match ends immediately.
+- **Knocking out a support card scores no point** (existing interpretation).
+- The Mbok Sumi artwork says "berubah wujud menjadi apa pun"; the implemented rule is the clarified
+  evolution chain `PK → BN → SB`, not a free-form transformation.
 - The Unity MCP package (`com.coplaydev.unity-mcp`) was added to the manifest for validation;
   you can remove it from `Packages/manifest.json` if you don't want it.

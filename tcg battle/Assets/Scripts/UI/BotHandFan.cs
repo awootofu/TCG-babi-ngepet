@@ -16,9 +16,9 @@ namespace TcgBattle.UI
     /// </summary>
     public class BotHandFan : MonoBehaviour
     {
-        // Kept deliberately faint, but lifted a little so the generic backs still read
-        // as dark-on-dark against the refined bot terrace.
-        private const float FanOpacity = 0.40f;
+        // The official card back is fully opaque: the hidden hand must read as real
+        // cards, while the back artwork still guarantees no identity can leak.
+        private const float FanOpacity = 1f;
         private const float DrawTime = 0.32f;
         private const float PlayTime = 0.32f;
 

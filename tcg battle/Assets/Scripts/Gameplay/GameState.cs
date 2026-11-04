@@ -11,13 +11,14 @@ namespace TcgBattle.Gameplay
         public string CardId;
         public Data.BattleCardDef Battle;      // null for support cards
         public Data.SupportCardDef Support;    // null for battle cards
-        public int CurrentHp;                  // battle cards only; starts at MaxHp
+        public int CurrentHp;                  // starts at MaxHp; support cards may have 0 max HP
         public bool FaceDown;                  // used during the coin-flip reveal animation
 
         public bool IsBattle => Battle != null;
         public bool IsSupport => Support != null;
-        public bool IsKnockedOut => IsBattle && CurrentHp <= 0;
-        public int MaxHp => IsBattle ? Battle.maxHp : 0;
+        public bool HasHp => MaxHp > 0;
+        public bool IsKnockedOut => HasHp && CurrentHp <= 0;
+        public int MaxHp => IsBattle ? Battle.maxHp : Support != null ? Support.maxHp : 0;
         public int AttackPower => IsBattle ? Battle.attack : 0;
         public int AttackCost => IsBattle ? Battle.attackEnergyCost : 0;
         public int RetreatCost => IsBattle ? Battle.retreatEnergyCost : 0;
@@ -32,7 +33,7 @@ namespace TcgBattle.Gameplay
 
         public static CardInstance CreateSupport(Data.SupportCardDef def)
         {
-            return new CardInstance { CardId = def.id, Support = def };
+            return new CardInstance { CardId = def.id, Support = def, CurrentHp = def.maxHp };
         }
     }
 
@@ -48,8 +49,7 @@ namespace TcgBattle.Gameplay
         public int Energy;
         public int Points;
         public bool HasAttackedThisTurn;
-        public int NextAttackBonus;            // Punarma single-shot bonus
-        public bool UsedFreeRetreatViaMbokSumi;// set when the Mbok Sumi free-retreat was consumed this turn
+        public int NextAttackBonus;            // Punarma single-shot bonus (persists until the next attack)
 
         public bool HasBenchBattleCard
         {
@@ -72,7 +72,6 @@ namespace TcgBattle.Gameplay
             Points = 0;
             HasAttackedThisTurn = false;
             NextAttackBonus = 0;
-            UsedFreeRetreatViaMbokSumi = false;
         }
     }
 }
